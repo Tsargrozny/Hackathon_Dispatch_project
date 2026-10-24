@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Organ Relay Box</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  body { overflow: hidden; transition: background-color 1.2s ease; }
+  #glow {
+    position: fixed; inset: 0; transition: background 1.2s ease;
+    animation: breathe 4s ease-in-out infinite;
+  }
+  body.red #glow { animation-duration: 1.1s; }
+  body.amber #glow { animation-duration: 2.4s; }
+  @keyframes breathe { 0%, 100% { opacity: .55 } 50% { opacity: 1 } }
+  #info { position: fixed; inset: auto 0 calc(24px + env(safe-area-inset-bottom)) 0; text-align: center; color: rgba(0,0,0,.72); font-weight: 600; }
+  #info .big { font-size: 42px; letter-spacing: -.02em; }
+  #info .small { font-size: 14px; opacity: .8; margin-top: 4px; }
+  #sensors { position: fixed; top: 10px; left: 0; right: 0; text-align: center; font-size: 11px; color: rgba(0,0,0,.55); }
+</style>
+</head>
+<body class="green">
+<div id="glow"></div>
+<div id="sensors"></div>
+<div id="info"><div class="big" id="margin">--</div><div class="small" id="sub">waiting for server…</div></div>
+<script src="common.js"></script>
+<script>
+  // The phone inside the cooler. Its only "UI" is light and voice.
+  const C = OR.STATUS_COLORS;
+  const sensors = { motion: "off", gps: "off", wake: "off" };
+  const showSensors = () => document.getElementById("sensors").textContent =
+    `motion ${sensors.motion} · gps ${sensors.gps} · screen-lock ${sensors.wake}`;
+
+  const onEvent = OR.eventStream("box", (e) => { if (e.say) OR.speak(e.say); });
+
+  OR.connect((s) => {
+    onEvent(s);
+    document.body.className = s.status;
+    const c = C[s.status];
+    document.getElementById("glow").style.background =
+      `radial-gradient(circle at 50% 45%, ${c} 0%, ${c}cc 35%, ${c}55 70%, #000 100%)`;
+    document.getElementById("margin").textContent = s.delivered ? "Delivered" : `${OR.fmtHM(s.margin_min)} spare`;
+    document.getElementById("sub").textContent =
+      `${s.shipment_id} · ${s.temp_c.toFixed(1)}°C · ${s.destination.short}`;
+  });
+
+  async function startSensors() {
+    // Motion (iOS needs explicit permission from a tap)
+    try {
+      if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+        const r = await DeviceMotionEvent.requestPermission();
+        if (r !== "granted") throw new Error("denied");
+      }
+      let lastShock = 0;
+      window.addEventListener("devicemotion", (ev) => {
+        const a = ev.accelerationIncludingGravity;
+        if (!a || a.x == null) return;
+        sensors.motion = "on"; showSensors();
+        const g = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) / 9.81;
+        if (g > 2.5 && Date.now() - lastShock > 8000) {
+          lastShock = Date.now();
+          OR.post("/api/telemetry", { kind: "shock", g });
+        }
+      });
+      sensors.motion = "waiting";
+    } catch (e) { sensors.motion = "unavailable"; }
+
+    // Real GPS, reported alongside the simulated route
+    if ("geolocation" in navigator) {
+      let lastSent = 0;
+      navigator.geolocation.watchPosition((p) => {
+        sensors.gps = `±${Math.round(p.coords.accuracy)}m`; showSensors();
+        if (Date.now() - lastSent > 15000) {
+          lastSent = Date.now();
+          OR.post("/api/telemetry", { kind: "geo", lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy });
+        }
+      }, () => { sensors.gps = "unavailable"; showSensors(); }, { enableHighAccuracy: true });
+    } else sensors.gps = "unavailable";
+
+    sensors.wake = (await OR.wakeLock()) ? "held" : "unavailable";
+    showSensors();
+    OR.speak("Organ relay box armed.");
+  }
+
+  OR.startOverlay("Seal the box",
+    "This phone goes in the cooler. It glows green, amber or red and speaks only when something changes. Grant motion and location access when asked.",
+    startSensors);
+</script>
+</body>
+</html>

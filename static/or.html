@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organ Relay OR Ambient</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  body { transition: background 2s ease; display: grid; place-items: center; text-align: center; }
+  #eta { font-size: clamp(40px, 12vw, 120px); font-weight: 300; letter-spacing: -.03em; color: rgba(255,255,255,.85); }
+  #label { font-size: 16px; color: rgba(255,255,255,.55); margin-top: 8px; }
+  #last { position: fixed; bottom: 18px; left: 0; right: 0; font-size: 14px; color: rgba(255,255,255,.55); }
+</style>
+</head>
+<body>
+<div><div id="eta">--</div><div id="label"></div></div>
+<div id="last"></div>
+<script src="common.js"></script>
+<script>
+  // Recipient OR: the room's light warms as the organ approaches; announcements are spoken.
+  // Optional ?center=cedars|ucdavis|ucsf to act as one specific hospital.
+  const center = new URLSearchParams(location.search).get("center");
+  let places = null;
+  const mine = (s) => !center || s.destination.key === center;
+
+  const onEvent = OR.eventStream("or", (e, s) => {
+    if (center && places && !e.text.startsWith(places[center].short) && e.kind === "or") return;
+    if (e.kind !== "or" && !mine(s)) return;
+    if (e.say) OR.speak(e.say);
+    document.getElementById("last").textContent = `${e.clock} · ${e.text}`;
+  });
+
+  OR.connect((s) => {
+    places = s.places;
+    onEvent(s);
+    const etaEl = document.getElementById("eta"), lab = document.getElementById("label");
+    if (!mine(s)) {
+      document.body.style.background = "#050608";
+      etaEl.textContent = "Standby";
+      lab.textContent = `${places[center].short}: no organ inbound`;
+      return;
+    }
+    // 0 = far (cool dim blue), 1 = arriving (bright warm white)
+    const t = s.delivered ? 1 : Math.max(0, Math.min(1, 1 - s.eta_min / 180));
+    const hue = 220 - t * 185, light = 6 + t * 30, sat = 40 + t * 30;
+    document.body.style.background = `hsl(${hue} ${sat}% ${light}%)`;
+    etaEl.textContent = s.delivered ? "Arrived" : OR.fmtHM(s.eta_min);
+    lab.textContent = `${s.organ_label} ${s.shipment_id} → ${s.destination.short}${s.status !== "green" ? " · " + s.status : ""}`;
+  });
+
+  OR.startOverlay("Operating room ambient",
+    "Put this on the OR wall screen or a smart bulb. The room warms as the organ approaches and announces 60, 30 and 10 minutes out.",
+    async () => { await OR.wakeLock(); });
+</script>
+</body>
+</html>

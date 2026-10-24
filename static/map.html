@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organ Relay Map</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="style.css">
+<style>
+  body { display: grid; grid-template-columns: 1fr 380px; height: 100vh; }
+  @media (max-width: 860px) { body { grid-template-columns: 1fr; grid-template-rows: 55vh auto; height: auto; } }
+  #map { height: 100%; min-height: 300px; background: #0b0d10; }
+  aside { overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; border-left: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0; }
+  .tag { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .big { font-size: 34px; font-weight: 700; letter-spacing: -.02em; }
+  .bar { height: 10px; border-radius: 6px; background: var(--panel-2); overflow: hidden; position: relative; margin: 10px 0 4px; }
+  .bar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 6px; }
+  .legend { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  ol { margin: 0; padding-left: 18px; font-size: 13px; }
+  ol li { padding: 3px 0; }
+  ol li.done { color: var(--muted); }
+  ol li.current { color: var(--text); font-weight: 600; }
+  #feed div { font-size: 13px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+  #esc { display: none; border-color: #7f1d1d; }
+  #esc.on { display: block; }
+  .org { width: 22px; height: 22px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(255,255,255,.12); }
+  .leaflet-container { font: inherit; }
+  .lbl { background: rgba(11,13,16,.85); color: #e8eaed; border: 1px solid #2a2f38; border-radius: 6px; padding: 2px 6px; font-size: 11px; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<aside>
+  <div>
+    <h1>Organ Relay · what the system sees</h1>
+    <div class="tag">Nobody touched a screen to produce any of this.</div>
+  </div>
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b id="ship"></b><span id="pill" class="pill green">green</span>
+    </div>
+    <div class="big" id="margin">--</div>
+    <div class="muted" style="font-size:13px">spare safe time at arrival</div>
+    <div class="bar"><i id="bar-rem" style="background:#2a2f38;width:100%"></i><i id="bar-eta"></i></div>
+    <div class="legend"><span id="l-eta"></span><span id="l-rem"></span></div>
+    <p class="muted" id="reasons" style="font-size:13px;margin:8px 0 0"></p>
+    <p style="font-size:13px;margin:8px 0 0"><span id="temp"></span> · <span id="clock" class="mono"></span></p>
+  </div>
+  <div class="card" id="esc"><b>📞 Coordinator escalation</b><p id="escscript" style="font-size:13px;line-height:1.5"></p><div id="escopts" style="font-size:13px"></div></div>
+  <div class="card"><b style="font-size:13px">Plan</b><ol id="legs"></ol></div>
+  <div class="card"><b style="font-size:13px">Chain of custody (auto-logged)</b><ol id="custody"></ol></div>
+  <div class="card"><b style="font-size:13px">Events</b><div id="feed"></div></div>
+</aside>
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="common.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const map = L.map("map", { zoomControl: false }).setView([37, -120], 6);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>', maxZoom: 18,
+  }).addTo(map);
+
+  let placesDrawn = false, fitted = false, planLayer = L.layerGroup().addTo(map), lastPlanKey = "";
+  const trail = L.polyline([], { color: "#60a5fa", weight: 4, opacity: .9 }).addTo(map);
+  const device = L.circleMarker([0, 0], { radius: 5, color: "#a78bfa", opacity: 0 }).addTo(map);
+  const organIcon = (c) => L.divIcon({ className: "", html: `<div class="org" style="background:${c}"></div>`, iconSize: [22, 22], iconAnchor: [11, 11] });
+  const organ = L.marker([0, 0], { icon: organIcon("#22c55e"), zIndexOffset: 1000 }).addTo(map);
+  let organColor = "";
+
+  OR.connect((s) => {
+    if (!placesDrawn) {
+      Object.values(s.places).forEach((p) => {
+        const col = p.kind === "center" ? "#f472b6" : p.kind === "hospital" ? "#22c55e" : "#9aa1ab";
+        L.circleMarker([p.lat, p.lng], { radius: 5, color: col, fillColor: col, fillOpacity: 1 })
+          .bindTooltip(p.short, { permanent: true, className: "lbl",
+            direction: p.kind === "airport" ? "left" : p.kind === "hospital" ? "top" : "right",
+            offset: p.kind === "airport" ? [-6, 0] : p.kind === "hospital" ? [0, -6] : [6, 0] }).addTo(map);
+      });
+      placesDrawn = true;
+    }
+    // planned route (redraw when the plan changes)
+    const planKey = s.plan_version + ":" + s.legs.length;
+    if (planKey !== lastPlanKey) {
+      planLayer.clearLayers();
+      s.legs.forEach((l) => {
+        if (l.mode === "stationary") return;
+        L.polyline([l.start, l.end], { color: l.mode === "charter" ? "#fbbf24" : "#9aa1ab", weight: 2, dashArray: "6 8", opacity: .8 }).addTo(planLayer);
+      });
+      lastPlanKey = planKey;
+    }
+    trail.setLatLngs(s.path);
+    organ.setLatLng([s.position.lat, s.position.lng]);
+    const c = OR.STATUS_COLORS[s.status];
+    if (c !== organColor) { organ.setIcon(organIcon(c)); organColor = c; }
+    if (s.device && s.device.lat) { device.setLatLng([s.device.lat, s.device.lng]).setStyle({ opacity: 1 }).bindTooltip("real phone GPS"); }
+    if (!fitted) { map.fitBounds(Object.values(s.places).map((p) => [p.lat, p.lng]), { padding: [40, 40] }); fitted = true; }
+
+    $("ship").textContent = `${s.organ_label} ${s.shipment_id} → ${s.destination.short}`;
+    $("pill").className = "pill " + s.status; $("pill").textContent = s.delivered ? "delivered" : s.status;
+    $("margin").textContent = OR.fmtHM(s.margin_min); $("margin").style.color = c;
+    const rem = Math.max(1, s.remaining_min);
+    $("bar-eta").style.width = Math.min(100, (s.eta_min / rem) * 100) + "%";
+    $("bar-eta").style.background = c;
+    $("l-eta").textContent = `ETA ${OR.fmtHM(s.eta_min)} (${s.eta_clock})`;
+    $("l-rem").textContent = `safe window left ${OR.fmtHM(s.remaining_min)}`;
+    $("reasons").textContent = s.reasons.join(" · ") || "On track. Nobody is being bothered.";
+    $("temp").textContent = `🌡 ${s.temp_c.toFixed(1)}°C`;
+    $("clock").textContent = `story clock ${s.clock}`;
+
+    $("legs").innerHTML = s.legs.map((l) => `<li class="${l.done ? "done" : l.current ? "current" : ""}">${l.name}
+      <span class="muted">· ${OR.fmtHM(l.duration)}${l.delay ? ` <span style="color:var(--amber)">(+${OR.fmtHM(l.delay)} delay)</span>` : ""}</span></li>`).join("");
+    $("custody").innerHTML = s.custody.map((k) => `<li><span class="mono muted">${k.clock}</span> ${k.custodian}<br><span class="muted" style="font-size:12px">${k.how}</span></li>`).join("");
+    $("feed").innerHTML = s.events.slice(-14).reverse().map((e) => `<div><span class="mono muted">${e.clock}</span> ${e.text}</div>`).join("");
+
+    const e = s.escalation;
+    $("esc").classList.toggle("on", !!e);
+    if (e) {
+      $("escscript").textContent = `“${e.script}”`;
+      $("escopts").innerHTML = e.decided
+        ? `<span class="pill green">decided: ${e.decided.key}</span> via ${e.decided.source}${e.decided.utterance ? ` · “${e.decided.utterance}”` : ""}`
+        : '<span class="pill red">ringing coordinator…</span>';
+    }
+  });
+</script>
+</body>
+</html>

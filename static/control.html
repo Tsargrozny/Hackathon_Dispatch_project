@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organ Relay Control</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  body { padding: 16px; }
+  main { max-width: 1100px; margin: 0 auto; display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  h1 { font-size: 18px; margin: 0 0 4px; max-width: 1100px; margin-inline: auto; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .stat b { display: block; font-size: 22px; }
+  .stat span { font-size: 12px; color: var(--muted); }
+  #log { max-height: 340px; overflow: auto; font-size: 13px; }
+  #log div { padding: 4px 0; border-bottom: 1px solid var(--line); }
+  input[type=range] { width: 220px; }
+  select { font: inherit; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .full { grid-column: 1 / -1; }
+  #esc .opt { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<h1>Control panel <span class="muted" style="font-weight:400">· backstage only, judges never see this</span></h1>
+<p class="muted" style="max-width:1100px;margin:0 auto 14px;font-size:13px" id="integr"></p>
+<main>
+  <section class="card">
+    <h2>Shipment</h2>
+    <div class="row"><span id="pill" class="pill green">green</span><span id="leg" class="muted"></span></div>
+    <div class="stats">
+      <div class="stat"><b id="margin">--</b><span>margin (spare safe time)</span></div>
+      <div class="stat"><b id="eta">--</b><span>ETA</span></div>
+      <div class="stat"><b id="temp">--</b><span>cooler temp</span></div>
+      <div class="stat"><b id="clock">--</b><span>story clock</span></div>
+      <div class="stat"><b id="remaining">--</b><span>safe time left</span></div>
+      <div class="stat"><b id="dest" style="font-size:15px">--</b><span>destination</span></div>
+    </div>
+    <p id="reasons" class="muted" style="font-size:13px"></p>
+  </section>
+
+  <section class="card">
+    <h2>Clock</h2>
+    <div class="row">
+      <button class="primary" id="play">▶ Play</button>
+      <button id="pause">❚❚ Pause</button>
+      <select id="speed">
+        <option value="30">30× (0.5 sim-min / s)</option>
+        <option value="60">60×</option>
+        <option value="120" selected>120× (2 sim-min / s)</option>
+        <option value="300">300×</option>
+        <option value="900">900×</option>
+      </select>
+    </div>
+    <div class="row">
+      <select id="organ"><option value="kidney">Kidney (24h)</option><option value="liver">Liver (10h)</option><option value="heart">Heart (5h)</option></select>
+      <button class="danger" id="reset">Reset scenario</button>
+    </div>
+    <h2 style="margin-top:16px">Inject trouble</h2>
+    <div class="row">
+      <button data-delay="60" data-label="Flight delayed">Flight delayed +1h</button>
+      <button data-delay="180" data-label="Flight delayed">+3h</button>
+      <button data-delay="300" data-label="Flight cancelled and rebooked">Flight cancelled (+5h)</button>
+      <button data-delay="30" data-label="Traffic">Traffic +30m</button>
+    </div>
+    <div class="row">
+      <label>Cooler temp <input type="range" id="tempr" min="0" max="14" step="0.5" value="4"></label>
+      <span id="tempv" class="mono">4.0°C</span>
+    </div>
+    <div class="row">
+      <button id="shock">Drop the box (shock)</button>
+      <button id="escalate">Force escalation call</button>
+    </div>
+  </section>
+
+  <section class="card" id="esc">
+    <h2>Escalation</h2>
+    <div id="escbody" class="muted">None open.</div>
+  </section>
+
+  <section class="card">
+    <h2>Event log</h2>
+    <div id="log"></div>
+  </section>
+
+  <section class="card full">
+    <h2>Open these on other devices</h2>
+    <div class="row" id="links"></div>
+    <p class="muted" style="font-size:13px;margin:6px 0 0">Phones need HTTPS for motion, GPS and wake-lock. Run <span class="mono">ngrok http 8000</span> and open the https URL on each phone.</p>
+  </section>
+</main>
+<script src="common.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const ctl = (action, extra) => OR.post("/api/control", { action, ...extra });
+  $("play").onclick = () => ctl("play");
+  $("pause").onclick = () => ctl("pause");
+  $("speed").onchange = (e) => ctl("speed", { value: +e.target.value });
+  $("reset").onclick = () => ctl("reset", { organ: $("organ").value });
+  $("shock").onclick = () => ctl("shock");
+  $("escalate").onclick = () => ctl("escalate");
+  document.querySelectorAll("[data-delay]").forEach((b) =>
+    b.onclick = () => ctl("delay", { minutes: +b.dataset.delay, label: b.dataset.label }));
+  $("tempr").oninput = (e) => { $("tempv").textContent = (+e.target.value).toFixed(1) + "°C"; };
+  $("tempr").onchange = (e) => ctl("temp", { value: +e.target.value });
+
+  const pages = [["box.html", "📦 Box (phone in cooler)"], ["courier.html", "🚗 Courier"], ["coordinator.html", "📞 Coordinator phone"],
+                 ["or.html", "🏥 OR ambient"], ["map.html", "🗺️ Judges' map"]];
+  $("links").innerHTML = pages.map(([u, l]) => `<a href="${u}" target="_blank"><button>${l}</button></a>`).join("");
+
+  OR.connect((s) => {
+    $("integr").textContent = `Claude: ${s.integrations.claude ? "on" : "off (template script)"} · Twilio: ${s.integrations.twilio ? "on (real calls)" : "off (browser phone)"}`;
+    $("pill").className = "pill " + s.status; $("pill").textContent = s.status;
+    $("leg").textContent = s.delivered ? "Delivered" : `${s.leg.name} · ${s.leg.custodian}`;
+    $("margin").textContent = OR.fmtHM(s.margin_min);
+    $("margin").style.color = OR.STATUS_COLORS[s.status];
+    $("eta").textContent = `${OR.fmtHM(s.eta_min)}`;
+    $("temp").textContent = s.temp_c.toFixed(1) + "°C";
+    $("clock").textContent = s.clock + (s.running ? "" : " ❚❚");
+    $("remaining").textContent = OR.fmtHM(s.remaining_min);
+    $("dest").textContent = s.destination.short;
+    $("reasons").textContent = s.reasons.join(" · ");
+    $("log").innerHTML = s.events.slice().reverse().map((e) =>
+      `<div><span class="mono muted">${e.clock}</span> <b>${e.kind}</b> ${e.text}</div>`).join("");
+
+    const e = s.escalation;
+    if (!e) $("escbody").innerHTML = "None open.";
+    else {
+      $("escbody").innerHTML =
+        `<p style="margin-top:0">${e.decided ? `<span class="pill green">decided: ${e.decided.key}</span> via ${e.decided.source}` : '<span class="pill red">waiting for coordinator</span>'}
+         <span class="muted">${e.call ? "· " + e.call.info : ""}</span></p>
+         <p style="font-size:14px;line-height:1.5">“${e.script}”</p>` +
+        e.options.map((o) => `<div class="opt"><div><b>${o.label}</b><br><span class="muted" style="font-size:13px">ETA ${OR.fmtHM(o.eta_min)} · ${OR.fmtHM(o.margin_min)} spare</span></div>
+          ${e.decided ? "" : `<button data-choice="${o.key}">Choose (wizard)</button>`}</div>`).join("");
+      $("escbody").querySelectorAll("[data-choice]").forEach((b) =>
+        b.onclick = () => OR.post("/api/decide", { choice: b.dataset.choice, source: "control panel" }));
+    }
+  });
+</script>
+</body>
+</html>

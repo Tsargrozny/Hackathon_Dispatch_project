@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organ Relay</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  body { padding: 32px 16px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -.02em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 24px 0; }
+  .grid a { text-decoration: none; color: inherit; }
+  .grid .card:hover { border-color: #3b4350; }
+  .grid b { display: block; margin-bottom: 4px; }
+  .grid span { font-size: 13px; color: var(--muted); line-height: 1.45; }
+  ol { line-height: 1.7; color: var(--muted); }
+  ol b { color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Organ Relay</h1>
+  <p class="muted">The cooler that coordinates itself. An invisible interface for donor-organ transport: sensing replaces data entry, light and voice replace screens, and humans are only interrupted when a decision is needed.</p>
+  <div class="grid">
+    <a href="box.html"><div class="card"><b>📦 Box</b><span>Phone inside the cooler. Glows green, amber or red; speaks on change; reports shocks and GPS.</span></div></a>
+    <a href="courier.html"><div class="card"><b>🚗 Courier</b><span>Stays in a pocket. Buzz patterns and spoken instructions only.</span></div></a>
+    <a href="coordinator.html"><div class="card"><b>📞 Coordinator phone</b><span>Silent until a shipment is at risk, then it rings. Answer by voice.</span></div></a>
+    <a href="or.html"><div class="card"><b>🏥 OR ambient</b><span>Room light warms as the organ approaches; spoken 60/30/10-minute calls.</span></div></a>
+    <a href="map.html"><div class="card"><b>🗺️ Judges' map</b><span>What the system sees: route, margin, auto-logged custody chain.</span></div></a>
+    <a href="control.html"><div class="card"><b>🎛️ Control panel</b><span>Backstage "Wizard of Oz" controls: clock, delays, temperature, shocks.</span></div></a>
+  </div>
+  <h2 style="font-size:16px">Demo script (about 3 minutes)</h2>
+  <ol>
+    <li>Open <b>Box</b>, <b>Coordinator</b> and <b>OR</b> on separate devices, tap start on each. Put the map on the projector.</li>
+    <li>On <b>Control</b>, press Play. The box glows green; handoffs log themselves as it moves. Point out that nobody has typed anything.</li>
+    <li>Press <b>Flight cancelled (+5h)</b>. The box turns red and speaks; the clock slows; the coordinator phone rings.</li>
+    <li>Answer and say <b>"reroute"</b> (or "charter"). The box goes green, the courier phone buzzes, the old OR is told to stand down and the new one is told the organ is inbound.</li>
+    <li>Speed up to 900× and let it deliver. Show the custody chain on the map.</li>
+  </ol>
+</main>
+</body>
+</html>

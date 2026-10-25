@@ -2,19 +2,68 @@
 
 Full pitch deck: https://1drv.ms/p/c/d139807b8b674317/IQCEUc2NiekJRopzcCwmleP1ASZRgkT9K2XzHnxD1wq_rO8
 
+## Run the demo yourself (judges start here)
+
+You need **one Windows laptop, Python 3.10 or newer, and Chrome**. No API keys, accounts, phones or logins are required. The demo works fully offline from the live data layers: the shipment is simulated, and anything live (map layers, phone line) is an optional extra.
+
+**1. Get the code and install (about 2 minutes)**
+
+```powershell
+git clone https://github.com/Tsargrozny/Hackathon_Dispatch_project.git
+cd Hackathon_Dispatch_project
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+If PowerShell blocks the activate script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and try again. On macOS or Linux use `source .venv/bin/activate`.
+
+**2. Start the server**
+
+```powershell
+uvicorn server.main:app --host 0.0.0.0 --port 8000
+```
+
+Leave it running. You should see `Organ Relay running. Open http://localhost:8000`.
+
+**3. Open these pages in Chrome, each in its own window** (everything runs on `localhost`, so sensors and speech work without HTTPS)
+
+| Window | Address | Do this |
+|---|---|---|
+| Judges' map | http://localhost:8000/map.html | Just watch |
+| Control panel | http://localhost:8000/control.html | You drive the demo from here |
+| Box (the phone in the cooler) | http://localhost:8000/box.html | Click the start button on the overlay and allow sound |
+| Coordinator phone | http://localhost:8000/coordinator.html | Click the start button on the overlay and allow sound |
+| Operating room | http://localhost:8000/or.html | Click the start button on the overlay and allow sound |
+
+The box, coordinator and OR pages are silent until you click the start overlay, because browsers block sound until you interact. A laptop has no motion sensor, so the box shows `motion waiting` and its GPS may read `unavailable`. That is expected; the control panel's shock button stands in for them.
+
+**4. Run it (about 3 minutes)**
+
+1. On the control panel press **Play**. The map shows the organ moving and the box glows **green**. Custody handoffs appear on the map by themselves.
+2. Press **Flight cancelled (+5h)**. The box turns **red** and speaks, the clock slows, and the coordinator page shows the options (hold, charter, reroute) and asks for a decision.
+3. On the coordinator page click an option, or press **Answer** and say "reroute" or "charter" (voice needs Chrome and a microphone). The box returns to **green** and the map switches to the new destination, for example UC Davis, Sacramento.
+4. Set the speed on the control panel to **900x** and let it deliver. The map shows the full custody chain.
+5. Try the extras: **Drop the box (shock)**, **Box goes silent** (shows the offline alarm), the delay and traffic buttons, the organ picker (kidney, liver, heart) and the **Static ice / Perfusion pump** choice, then **Reset scenario** to run again.
+
+**What is real and what is simulated.** The shipment, flight and road conditions you inject are simulated, as the table under [Live vs simulated data](#live-vs-simulated-data) shows. The fire, traffic and aircraft layers on the map and the FAA and weather panel on the control page are live when the machine is online. Everything simulated is labelled "DEMO" or "simulated" on screen.
+
+**If something doesn't work**
+- *Page won't load:* check the server window is still running and you used port 8000. If the port is taken, start it with `--port 8001` and use that in the addresses.
+- *No sound:* click the start overlay on that page, and make sure the browser tab isn't muted.
+- *Nothing happens after Play:* press **Reset scenario**, then **Play** again.
+- *Coordinator voice doesn't hear you:* use Chrome and allow the microphone, or just click an option.
+- *Map layers are empty:* the traffic and fire layers need free keys (see [API keys](#api-keys-settings)); aircraft, weather and FAA data need only an internet connection. The demo works without any of them.
+
+Optional extras, none needed to run the demo: the phone line, a real phone call to the coordinator, and phones for the box and courier (see [Public URL](#public-url-ngrok-or-cloudflare-tunnel)).
+
 ## MedRoute dispatcher line: call **(858) 348-9340**
 
 Call the number, say which organ you have, where it is going and how long ago it was recovered. The Vapi voice agent calls our `plan_organ_transport` tool, the Organ Relay engine below re-plans the shipment and starts playback, and the agent reads back the destination, ETA and margin in one sentence. Every call shows up live in the event feed on the judges' map (`/map.html`) and the control panel.
 
-### Quick start (Windows Command Prompt)
+### Setup
 
-```bat
-cd %USERPROFILE%\OneDrive\Documents\GitHub\Hackathon_Dispatch_project
-python -m venv .venv
-.venv\Scripts\activate.bat
-pip install -r requirements.txt
-uvicorn server.main:app --host 0.0.0.0 --port 8000
-```
+Install and start the server as in [Run the demo yourself](#run-the-demo-yourself-judges-start-here). In Command Prompt, activate the environment with `.venv\Scripts\activate.bat`.
 
 Open http://localhost:8000/settings to paste API keys, and http://localhost:8000/map.html for the judges' map.
 

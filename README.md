@@ -1,5 +1,60 @@
 # Hackathon_Dispatch_project
 
+## MedRoute dispatcher line: call **(858) 348-9340**
+
+Call the number, say which organ you have, where it is going and how long ago it was recovered. The Vapi voice agent calls our `plan_organ_transport` tool, the Organ Relay engine below re-plans the shipment and starts playback, and the agent reads back the destination, ETA and margin in one sentence. Every call shows up live in the event feed on the judges' map (`/map.html`) and the control panel.
+
+### Quick start (Windows Command Prompt)
+
+```bat
+cd %USERPROFILE%\OneDrive\Documents\GitHub\Hackathon_Dispatch_project
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+uvicorn server.main:app --host 0.0.0.0 --port 8000
+```
+
+Open http://localhost:8000/settings to paste API keys, and http://localhost:8000/map.html for the judges' map.
+
+### API keys: `/settings`
+
+`http://localhost:8000/settings` is a dark page for pasting keys. They are saved to `.env` on this laptop, which git ignores, and reloaded without a restart. `GET /api/settings` only reports which keys are set and never returns the values. The settings page and `POST /api/settings` only accept requests from this laptop, so they stay locked even when ngrok exposes the server for Vapi. Every key is optional.
+
+| Key | Adds | Without it |
+|---|---|---|
+| `TOMTOM_API_KEY` | Live traffic flow tiles on the map | No traffic layer |
+| `FIRMS_MAP_KEY` | NASA FIRMS active fires (last 24 h) on the map | No fire layer |
+| `CESIUM_ION_TOKEN`, `OPENSKY_CLIENT_ID`, `OPENSKY_CLIENT_SECRET`, `VAPI_PUBLIC_KEY`, `VAPI_ASSISTANT_ID` | Stored for later integrations (the default assistant is `779b0be3-e9ce-48f6-a130-1498576f2888`) | Nothing changes |
+
+### Connecting Vapi
+
+1. Run `ngrok http 8000` and copy the https URL.
+2. In the Vapi dashboard, set the assistant's **Server URL** to `https://<your-ngrok-host>/vapi`.
+3. Add a function tool named `plan_organ_transport` with parameters `organ` (string), `from_hospital` (string), `to_hospital` (string) and `minutes_since_recovery` (number).
+
+`POST /vapi` always answers HTTP 200. Tool calls get the Vapi `{"results": [{"toolCallId", "result"}]}` reply. The destination is a loose name match against the transplant centers in `server/scenario.py` (Cedars-Sinai, UC Davis, UCSF), and falls back to Cedars-Sinai. `status-update`, final `transcript`, `conversation-update` and `end-of-call-report` messages are logged as engine events ("Phone line: call connected", "Caller: …", "Dispatcher: …", "Call report: summary"). Token-by-token messages such as `model-output` and `speech-update` are ignored to keep the feed readable.
+
+### Live vs simulated data
+
+| Data | Live or simulated |
+|---|---|
+| Phone call, speech recognition, voice agent replies | **Live** (Vapi) |
+| Shipment movement, ETA, margin, custody handoffs, cooler temperature | **Simulated** by the Organ Relay engine on an accelerated clock. Delays, temperature and shocks are injected from the control panel |
+| Box phone accelerometer shocks and GPS | **Live** from the phone's sensors |
+| Hospital and airport coordinates | Real |
+| Organs, people, couriers, flight numbers | Fictional |
+| Flights layer on the map | **Live** from adsb.lol (no key) |
+| Traffic layer | **Live** TomTom flow tiles, only with `TOMTOM_API_KEY` |
+| Wildfire layer | **Live** NASA FIRMS VIIRS detections, only with `FIRMS_MAP_KEY` |
+
+Each layer is fetched by the backend through `/api/medroute/*` and cached for 60 seconds. If a source fails, its layer simply stays empty.
+
+### How we used AI tools
+
+- **Claude Code** built the backend and the map from our written specs: the `/settings` key store, the `POST /vapi` webhook with the `plan_organ_transport` tool, and the live data layers. We reviewed and tested each step and committed it phase by phase.
+- **Vapi** runs the voice agent on (858) 348-9340. It handles speech-to-text, the conversation and text-to-speech, and calls our server for the tool.
+- **Claude** (optional, `ANTHROPIC_API_KEY`) writes the spoken escalation alert and interprets free-form coordinator replies in the Organ Relay engine.
+
 # Organ Relay
 
 **The cooler that coordinates itself.** An invisible interface for donor-organ transport.

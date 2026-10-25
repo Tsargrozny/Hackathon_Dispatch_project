@@ -63,6 +63,13 @@ def _app():
     return main.engine, main.broadcast
 
 
+def _apply_feeds(engine) -> None:
+    from . import main
+    main.feeds.apply_to(engine)
+    if getattr(engine, "demo", None):
+        engine.demo.apply_to(engine)
+
+
 def _clean(text, limit: int = 300) -> str:
     return re.sub(r"[<>]", "", re.sub(r"<[^>]*>", "", str(text or ""))).strip()[:limit]
 
@@ -130,10 +137,12 @@ async def plan_organ_transport(args: dict) -> str:
         engine.destination = dest
         charter = [l for l in engine._charter_legs(sc.p("donor"), dest) if l["mode"] != "stationary"]
         engine.legs = [dict(l, delay=0.0) for l in [engine.legs[0]] + charter]
+        engine.planned = [l["duration"] for l in engine.legs]
         engine.path = []
         engine._record_path(force=True)
     if minutes is not None:
         engine.elapsed0 = max(0.0, min(minutes, engine.window_min))
+    _apply_feeds(engine)
     engine.running = True
     engine._recompute_status()
 

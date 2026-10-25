@@ -157,7 +157,7 @@ static/        the six views (plain HTML/JS, Leaflet bundled for offline use)
 ## Safety, audit and access
 
 - **Decision log:** every event, custody change and decision is appended to `decision_log.jsonl` (what, why, who, UTC time, unique action ID). It is never rewritten, so it survives resets. The file is git-ignored.
-- **Access:** set `BASIC_AUTH_USER` and `BASIC_AUTH_PASS` in `.env` before exposing the app with ngrok. This protects every page and API except `/voice/*`, which instead rejects any request without a valid Twilio signature (and always rejects when Twilio isn't configured). The server prints a warning if `PUBLIC_URL` is set without basic auth.
+- **Access:** set `BASIC_AUTH_USER` and `BASIC_AUTH_PASS` in `.env` before exposing the app with ngrok. This protects every page and API except `/voice/*`, which instead rejects any request without a valid Twilio signature (and always rejects when Twilio isn't configured). `POST /vapi` is also exempt, because Vapi cannot send basic-auth credentials, so keep the ngrok URL private. The server prints a warning if `PUBLIC_URL` is set without basic auth.
 - **Out of scope:** recipient choice, accepting or declining organs, and clinical or viability questions are refused (spoken, tapped or by phone) and logged. The system only handles logistics.
 - **Box offline:** if the box has reported before and then stays silent for 10 minutes (`BOX_OFFLINE_SEC`), the status goes amber, the coordinator is alerted and the map greys the last known location. Use **Box goes silent** on the control panel to demo it.
 - **Stale data:** a live feed older than 5 minutes is marked low confidence, is never applied to the shipment, and triggers one coordinator alert. The control panel shows each feed's age.

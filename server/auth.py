@@ -9,6 +9,7 @@ import base64
 import secrets
 
 EXEMPT_PREFIXES = ("/voice/",)
+EXEMPT_PATHS = ("/vapi",)
 
 
 class BasicAuth:
@@ -28,7 +29,9 @@ class BasicAuth:
                 and secrets.compare_digest(password, self.expected[1]))
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] not in ("http", "websocket") or scope["path"].startswith(EXEMPT_PREFIXES) or self._ok(scope):
+        path = scope["path"]
+        if (scope["type"] not in ("http", "websocket") or path.startswith(EXEMPT_PREFIXES)
+                or path.rstrip("/") in EXEMPT_PATHS or self._ok(scope)):
             return await self.app(scope, receive, send)
         if scope["type"] == "websocket":
             await receive()  # the connect message

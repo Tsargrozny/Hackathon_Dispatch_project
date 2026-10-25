@@ -109,3 +109,6 @@ __marimo__/
 
 # Decision log is local audit data
 decision_log.jsonl
+!.env.example
+.claude-flow/
+ruvector.db

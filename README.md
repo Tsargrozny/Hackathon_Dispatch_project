@@ -22,13 +22,13 @@ Open http://localhost:8000/settings to paste API keys, and http://localhost:8000
 
 | Key | Adds | Without it |
 |---|---|---|
-| `TOMTOM_API_KEY` | Live traffic flow tiles on the map | No traffic layer |
+| `TOMTOM_API_KEY` | Live traffic flow tiles and the TomTom night basemap on the map | No traffic layer; the map uses the Esri dark-gray basemap |
 | `FIRMS_MAP_KEY` | NASA FIRMS active fires (last 24 h) on the map | No fire layer |
 | `CESIUM_ION_TOKEN`, `OPENSKY_CLIENT_ID`, `OPENSKY_CLIENT_SECRET`, `VAPI_PUBLIC_KEY`, `VAPI_ASSISTANT_ID` | Stored for later integrations (the default assistant is `779b0be3-e9ce-48f6-a130-1498576f2888`) | Nothing changes |
 
 ### Connecting Vapi
 
-1. Run `ngrok http 8000` and copy the https URL.
+1. Run `ngrok http 8000` (or a Cloudflare Tunnel, see [Public URL](#public-url-ngrok-or-cloudflare-tunnel)) and copy the https URL.
 2. In the Vapi dashboard, set the assistant's **Server URL** to `https://<your-ngrok-host>/vapi`.
 3. Add a function tool named `plan_organ_transport` with parameters `organ` (string), `from_hospital` (string), `to_hospital` (string) and `minutes_since_recovery` (number).
 
@@ -45,6 +45,7 @@ Open http://localhost:8000/settings to paste API keys, and http://localhost:8000
 | Organs, people, couriers, flight numbers | Fictional |
 | Flights layer on the map | **Live** from adsb.lol (no key) |
 | Traffic layer | **Live** TomTom flow tiles, only with `TOMTOM_API_KEY` |
+| Basemap | **Live** TomTom night tiles (proxied and cached for an hour) with `TOMTOM_API_KEY`; otherwise Esri dark-gray. Esri satellite is always selectable from the map's layer switcher |
 | Wildfire layer | **Live** NASA FIRMS VIIRS detections, only with `FIRMS_MAP_KEY` |
 
 Each layer is fetched by the backend through `/api/medroute/*` and cached for 60 seconds. If a source fails, its layer simply stays empty.
@@ -76,15 +77,29 @@ Open http://localhost:8000. You can also press **F5** in VS Code, which uses the
 
 If PowerShell blocks the activate script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
 
-### Phones
+### Public URL (ngrok or Cloudflare Tunnel)
 
-Motion sensors, GPS and screen wake-lock need HTTPS. Install [ngrok](https://ngrok.com/download), then run:
+Motion sensors, GPS and screen wake-lock need HTTPS, and Vapi needs a public URL. Use either tunnel. Both give an https URL that forwards to the server on port 8000.
+
+**ngrok:** install [ngrok](https://ngrok.com/download), then run:
 
 ```powershell
 ngrok http 8000
 ```
 
-Open the `https://….ngrok-free.app` URL on each phone. Use Android for the box and the courier if you can, because vibration and Web NFC don't work in iPhone Safari.
+**Cloudflare Tunnel (no account or login needed):** install [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/), then run:
+
+```powershell
+cloudflared tunnel --url http://localhost:8000
+```
+
+It prints a `https://<random-words>.trycloudflare.com` URL. Judges and phones only need that link. They never touch your Cloudflare account, and there is no Cloudflare username or password to share. The URL changes every time you restart the tunnel, so update `PUBLIC_URL` and the Vapi Server URL (`<url>/vapi`) each time.
+
+Anyone with the URL can reach the app. Share `<url>/map.html` with judges and keep the control panel (`/control.html`) to yourself, or set `BASIC_AUTH_USER` and `BASIC_AUTH_PASS` in `.env` to require a login.
+
+### Phones
+
+Open the tunnel's https URL (`https://….ngrok-free.app` or `https://….trycloudflare.com`) on each phone. Use Android for the box and the courier if you can, because vibration and Web NFC don't work in iPhone Safari.
 
 ## The views
 

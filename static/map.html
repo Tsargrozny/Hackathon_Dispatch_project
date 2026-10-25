@@ -57,9 +57,31 @@
 <script>
   const $ = (id) => document.getElementById(id);
   const map = L.map("map", { zoomControl: false }).setView([37, -120], 6);
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>', maxZoom: 18,
+  const BASE_ORDER = ["TomTom night", "Dark map", "Satellite"];
+  const basemaps = {
+    "Dark map": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+      attribution: "Tiles &copy; Esri", maxZoom: 16,
+    }),
+    "Satellite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      attribution: "Tiles &copy; Esri, Maxar, Earthstar Geographics", maxZoom: 19,
+    }),
+  };
+  const layerControl = L.control.layers(basemaps, null, {
+    collapsed: false, position: "topleft", sortLayers: true,
+    sortFunction: (a, b, na, nb) => {
+      const ia = BASE_ORDER.indexOf(na), ib = BASE_ORDER.indexOf(nb);
+      return ia >= 0 && ib >= 0 ? ia - ib : ia >= 0 ? -1 : ib >= 0 ? 1 : 0;
+    },
   }).addTo(map);
+  fetch("/api/settings").then((r) => (r.ok ? r.json() : null)).catch(() => null).then((s) => {
+    if (s && s.keys && s.keys.TOMTOM_API_KEY && s.keys.TOMTOM_API_KEY.set) {
+      const night = L.tileLayer("/api/medroute/tiles/night/{z}/{x}/{y}.png", { attribution: "&copy; TomTom", maxZoom: 20 });
+      layerControl.addBaseLayer(night, "TomTom night");
+      night.addTo(map);
+    } else {
+      basemaps["Dark map"].addTo(map);
+    }
+  });
 
   let placesDrawn = false, fitted = false, planLayer = L.layerGroup().addTo(map), lastPlanKey = "";
   const trail = L.polyline([], { color: "#60a5fa", weight: 4, opacity: .9 }).addTo(map);

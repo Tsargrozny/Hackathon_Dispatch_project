@@ -255,10 +255,15 @@ FLIGHT_CENTERS = ["rno", "smf", "lax"]
 FIRE_BBOX = "-123,32,-114,40.5"
 FIRE_SOURCES = ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT"]
 TOMTOM_TILE = "https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png"
+TOMTOM_BASEMAP = "https://api.tomtom.com/map/1/tile/basic/{style}/{z}/{x}/{y}.png"
+BASEMAP_STYLES = {"night", "main"}
 TILE_CACHE_MAX = 400
+BASEMAP_TTL = 3600
+BASEMAP_CACHE_MAX = 2000
 
 _layer_cache: dict[str, tuple[float, object]] = {}
 _tile_cache: dict[str, tuple[float, bytes]] = {}
+_basemap_cache: dict[str, tuple[float, bytes]] = {}
 
 
 async def _cached(key: str, fetch, empty):
@@ -348,23 +353,39 @@ async def fires():
     return {"source": "NASA FIRMS", "available": True, "count": len(items), "fires": items}
 
 
-@router.get("/api/medroute/traffic/{z}/{x}/{y}.png")
-async def traffic_tile(z: int, x: int, y: int):
+async def _proxy_tile(cache: dict, cache_key: str, url: str, ttl: int, limit: int, what: str) -> Response:
     key = keystore.get("TOMTOM_API_KEY")
-    if not key or not (0 <= z <= 22):
+    if not key:
         return Response(status_code=404)
-    tile_key = f"{z}/{x}/{y}"
-    hit = _tile_cache.get(tile_key)
-    if hit and time.time() - hit[0] < LAYER_TTL:
-        return Response(hit[1], media_type="image/png")
+    hit = cache.get(cache_key)
+    if hit and time.time() - hit[0] < ttl:
+        return Response(hit[1], media_type="image/png", headers={"Cache-Control": f"max-age={ttl}"})
     try:
-        r = await net.client().get(TOMTOM_TILE.format(z=z, x=x, y=y), params={"key": key, "tileSize": 256}, timeout=8)
+        r = await net.client().get(url, params={"key": key, "tileSize": 256}, timeout=8)
         r.raise_for_status()
     except Exception as e:
-        keystore.report("TOMTOM_API_KEY", False, f"Traffic tiles failed: {type(e).__name__}")
+        keystore.report("TOMTOM_API_KEY", False, f"{what} failed: {type(e).__name__}")
+        if hit:
+            return Response(hit[1], media_type="image/png")
         return Response(status_code=204)
-    keystore.report("TOMTOM_API_KEY", True, "Traffic tiles loading")
-    if len(_tile_cache) >= TILE_CACHE_MAX:
-        _tile_cache.pop(next(iter(_tile_cache)))
-    _tile_cache[tile_key] = (time.time(), r.content)
-    return Response(r.content, media_type="image/png")
+    keystore.report("TOMTOM_API_KEY", True, f"{what} loading")
+    if len(cache) >= limit:
+        cache.pop(next(iter(cache)))
+    cache[cache_key] = (time.time(), r.content)
+    return Response(r.content, media_type="image/png", headers={"Cache-Control": f"max-age={ttl}"})
+
+
+@router.get("/api/medroute/traffic/{z}/{x}/{y}.png")
+async def traffic_tile(z: int, x: int, y: int):
+    if not (0 <= z <= 22):
+        return Response(status_code=404)
+    return await _proxy_tile(_tile_cache, f"{z}/{x}/{y}", TOMTOM_TILE.format(z=z, x=x, y=y),
+                             LAYER_TTL, TILE_CACHE_MAX, "Traffic tiles")
+
+
+@router.get("/api/medroute/tiles/{style}/{z}/{x}/{y}.png")
+async def basemap_tile(style: str, z: int, x: int, y: int):
+    if style not in BASEMAP_STYLES or not (0 <= z <= 22) or not (0 <= x < 2 ** z and 0 <= y < 2 ** z):
+        return Response(status_code=404)
+    return await _proxy_tile(_basemap_cache, f"{style}/{z}/{x}/{y}", TOMTOM_BASEMAP.format(style=style, z=z, x=x, y=y),
+                             BASEMAP_TTL, BASEMAP_CACHE_MAX, "Basemap tiles")

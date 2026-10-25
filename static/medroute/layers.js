@@ -9,7 +9,10 @@
 
   const flights = L.layerGroup().addTo(map);
   const fires = L.layerGroup();
-  const control = L.control.layers(null, { "Live flights (adsb.lol)": flights }, { collapsed: false, position: "topleft" }).addTo(map);
+  const control = typeof layerControl !== "undefined"
+    ? layerControl
+    : L.control.layers(null, null, { collapsed: false, position: "topleft" }).addTo(map);
+  control.addOverlay(flights, "Live flights (adsb.lol)");
 
   async function getJSON(url) {
     try {

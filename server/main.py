@@ -15,7 +15,10 @@ from fastapi.staticfiles import StaticFiles
 load_dotenv()
 
 from . import voice  # noqa: E402  (env must be loaded first)
+from . import keystore, medroute  # noqa: E402
 from .engine import Engine  # noqa: E402
+
+keystore.reload()
 
 ROOT = Path(__file__).resolve().parent.parent
 TICK_SEC = 0.5
@@ -208,4 +211,5 @@ async def index():
     return RedirectResponse("/index.html")
 
 
+app.include_router(medroute.router)
 app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")

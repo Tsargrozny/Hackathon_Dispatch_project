@@ -106,9 +106,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-=======
-.env
-.venv/
-__pycache__/
-*.pyc
->>>>>>> d307288 (Initial project import)
+
+!.env.example
+.claude-flow/
+ruvector.db

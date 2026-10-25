@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MedRoute Keys</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { padding: 28px 16px 60px; }
+  main { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -.01em; }
+  .lead { color: var(--muted); margin: 0 0 22px; line-height: 1.5; font-size: 14px; }
+  .field { margin-bottom: 12px; }
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .name { font-weight: 600; }
+  .code { font-family: "JetBrains Mono", ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
+  .adds { font-size: 13px; color: var(--muted); margin: 6px 0 10px; line-height: 1.45; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  input { flex: 1 1 260px; min-width: 0; font: inherit; font-size: 14px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row button { padding: 8px 12px; font-size: 13px; }
+  .row a { align-self: center; font-size: 13px; }
+  .badge { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .badge.connected { background: #0f2e1b; color: var(--green); }
+  .badge.not_set { background: #1f242c; color: var(--muted); }
+  .badge.simulated { background: #33240a; color: var(--amber); }
+  .badge.error { background: #3a1214; color: var(--red); }
+  .detail { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .bar { position: sticky; bottom: 0; display: flex; gap: 12px; align-items: center; padding: 14px 0; background: linear-gradient(transparent, var(--bg) 30%); }
+  #msg { font-size: 13px; color: var(--muted); }
+  .nav { display: flex; gap: 14px; font-size: 14px; margin-bottom: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="nav"><a href="/dashboard">← MedRoute Command</a><a href="/">Home</a></div>
+  <h1>API keys</h1>
+  <p class="lead">Keys are saved to <span class="code">.env</span> on this laptop only, which git ignores. This page never shows a saved key back to you. Every key is optional: without one, MedRoute uses a free no-key source or a clearly labeled simulation.</p>
+  <form id="form" autocomplete="off"></form>
+  <div class="bar"><button class="primary" id="save" type="button">Save keys</button><span id="msg"></span></div>
+</main>
+<script>
+  const form = document.getElementById("form");
+  const msg = document.getElementById("msg");
+  const BADGE = { connected: "Connected", not_set: "Not set", simulated: "Simulated", error: "Error" };
+  const clear = new Set();
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  }
+
+  function render(data) {
+    form.innerHTML = data.fields.map((f) => {
+      const k = data.keys[f.key];
+      return `<div class="card field">
+        <div class="top"><div><div class="name">${esc(f.label)}</div><div class="code">${f.key}</div></div>
+          <span class="badge ${k.status}">${BADGE[k.status]}</span></div>
+        <div class="adds">${esc(f.adds)}</div>
+        <div class="row">
+          <input name="${f.key}" type="password" placeholder="${k.set ? "Saved. Paste a new value to replace it" : "Paste key"}" spellcheck="false">
+          ${k.set ? `<button type="button" data-clear="${f.key}">Remove</button>` : ""}
+          <a href="${f.link}" target="_blank" rel="noopener">Get key ↗</a>
+        </div>
+        <div class="detail">${esc(k.detail)}</div>
+      </div>`;
+    }).join("");
+    form.querySelectorAll("[data-clear]").forEach((b) => b.onclick = () => {
+      clear.add(b.dataset.clear);
+      b.textContent = "Will remove on save";
+      b.disabled = true;
+    });
+  }
+
+  async function load() {
+    const r = await fetch("/api/settings");
+    render(await r.json());
+  }
+
+  document.getElementById("save").onclick = async () => {
+    const values = {};
+    form.querySelectorAll("input").forEach((i) => { if (i.value.trim()) values[i.name] = i.value.trim(); });
+    msg.textContent = "Saving…";
+    const r = await fetch("/api/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ values, clear: [...clear] }) });
+    const out = await r.json();
+    if (!r.ok) { msg.textContent = out.error || "Could not save"; return; }
+    clear.clear();
+    msg.textContent = out.changed.length ? `Saved ${out.changed.length} key(s). Reloaded without a restart.` : "Nothing changed.";
+    await load();
+  };
+
+  load();
+</script>
+</body>
+</html>

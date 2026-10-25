@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import csv
+import io
 import json
 import re
+import time
 from collections import deque
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
-from . import keystore
+from . import keystore, net
 from . import scenario as sc
 from .engine import say_hm
 
@@ -234,3 +238,124 @@ async def vapi(req: Request):
     except Exception as e:
         print(f"[vapi] could not handle {kind}: {e!r}")
     return {"ok": True}
+
+
+LAYER_TTL = 60
+FLIGHT_RADIUS_NM = 81
+FLIGHT_CENTERS = ["rno", "smf", "lax"]
+FIRE_BBOX = "-123,32,-114,40.5"
+FIRE_SOURCES = ["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT"]
+TOMTOM_TILE = "https://api.tomtom.com/traffic/map/4/tile/flow/relative0-dark/{z}/{x}/{y}.png"
+TILE_CACHE_MAX = 400
+
+_layer_cache: dict[str, tuple[float, object]] = {}
+_tile_cache: dict[str, tuple[float, bytes]] = {}
+
+
+async def _cached(key: str, fetch, empty):
+    hit = _layer_cache.get(key)
+    if hit and time.time() - hit[0] < LAYER_TTL:
+        return hit[1]
+    try:
+        value = await fetch()
+    except Exception as e:
+        print(f"[layers] {key} failed: {e!r}")
+        value = hit[1] if hit else empty
+    _layer_cache[key] = (time.time(), value)
+    return value
+
+
+async def _adsb(lat: float, lng: float) -> list[dict]:
+    r = await net.client().get(f"https://api.adsb.lol/v2/point/{lat}/{lng}/{FLIGHT_RADIUS_NM}", timeout=15)
+    r.raise_for_status()
+    return r.json().get("ac") or []
+
+
+async def _fetch_flights() -> list[dict]:
+    rows = await asyncio.gather(*[_adsb(*sc.p(k)) for k in FLIGHT_CENTERS], return_exceptions=True)
+    seen: dict[str, dict] = {}
+    for batch in rows:
+        if isinstance(batch, Exception):
+            print(f"[layers] adsb.lol region failed: {batch!r}")
+            continue
+        for a in batch:
+            if a.get("lat") is None or a.get("lon") is None or a.get("alt_baro") == "ground":
+                continue
+            seen[a.get("hex")] = {
+                "id": a.get("hex"), "flight": (a.get("flight") or a.get("r") or a.get("hex") or "").strip(),
+                "lat": a["lat"], "lng": a["lon"], "track": a.get("track") or a.get("true_heading") or 0,
+                "alt": a.get("alt_baro"), "gs": a.get("gs"), "type": a.get("t"),
+            }
+    if not seen and all(isinstance(b, Exception) for b in rows):
+        raise RuntimeError("all adsb.lol regions failed")
+    return list(seen.values())
+
+
+async def _fetch_fires() -> list[dict]:
+    key = keystore.get("FIRMS_MAP_KEY")
+    if not key:
+        return []
+    base = "https://firms.modaps.eosdis.nasa.gov/api/area/csv/{key}/{src}/{bbox}/1"
+    responses = await asyncio.gather(*[net.client().get(base.format(key=key, src=s, bbox=FIRE_BBOX), timeout=20) for s in FIRE_SOURCES],
+                                     return_exceptions=True)
+    fires, ok = [], False
+    for r in responses:
+        if isinstance(r, Exception) or r.status_code != 200 or not r.text.startswith("latitude"):
+            continue
+        ok = True
+        for row in csv.DictReader(io.StringIO(r.text)):
+            try:
+                fires.append({"lat": float(row["latitude"]), "lng": float(row["longitude"]), "frp": float(row.get("frp") or 0),
+                              "confidence": row.get("confidence"), "acq": f"{row.get('acq_date')} {row.get('acq_time')}",
+                              "satellite": row.get("satellite")})
+            except (KeyError, ValueError):
+                continue
+    keystore.report("FIRMS_MAP_KEY", ok, f"{len(fires)} detections in the last 24 h" if ok else "FIRMS rejected the key or is unreachable")
+    if not ok:
+        raise RuntimeError("FIRMS returned no usable data")
+    return fires
+
+
+@router.get("/api/medroute/layers")
+async def layers():
+    return {
+        "flights": {"available": True, "source": "adsb.lol"},
+        "traffic": {"available": keystore.has("TOMTOM_API_KEY"), "source": "TomTom traffic flow"},
+        "fires": {"available": keystore.has("FIRMS_MAP_KEY"), "source": "NASA FIRMS VIIRS, last 24 h"},
+    }
+
+
+@router.get("/api/medroute/flights")
+async def flights():
+    items = await _cached("flights", _fetch_flights, [])
+    return {"source": "adsb.lol", "count": len(items), "flights": items}
+
+
+@router.get("/api/medroute/fires")
+async def fires():
+    if not keystore.has("FIRMS_MAP_KEY"):
+        return {"source": "NASA FIRMS", "available": False, "count": 0, "fires": []}
+    items = await _cached("fires", _fetch_fires, [])
+    return {"source": "NASA FIRMS", "available": True, "count": len(items), "fires": items}
+
+
+@router.get("/api/medroute/traffic/{z}/{x}/{y}.png")
+async def traffic_tile(z: int, x: int, y: int):
+    key = keystore.get("TOMTOM_API_KEY")
+    if not key or not (0 <= z <= 22):
+        return Response(status_code=404)
+    tile_key = f"{z}/{x}/{y}"
+    hit = _tile_cache.get(tile_key)
+    if hit and time.time() - hit[0] < LAYER_TTL:
+        return Response(hit[1], media_type="image/png")
+    try:
+        r = await net.client().get(TOMTOM_TILE.format(z=z, x=x, y=y), params={"key": key, "tileSize": 256}, timeout=8)
+        r.raise_for_status()
+    except Exception as e:
+        keystore.report("TOMTOM_API_KEY", False, f"Traffic tiles failed: {type(e).__name__}")
+        return Response(status_code=204)
+    keystore.report("TOMTOM_API_KEY", True, "Traffic tiles loading")
+    if len(_tile_cache) >= TILE_CACHE_MAX:
+        _tile_cache.pop(next(iter(_tile_cache)))
+    _tile_cache[tile_key] = (time.time(), r.content)
+    return Response(r.content, media_type="image/png")

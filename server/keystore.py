@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv, set_key, unset_key
+from dotenv import load_dotenv
 
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
@@ -14,48 +15,48 @@ FIELDS = [
     {
         "key": "TOMTOM_API_KEY",
         "label": "TomTom API key",
-        "adds": "Live traffic flow overlay on the globe and traffic-aware drive times (TomTom Routing, traffic=true).",
-        "fallback": "OSRM public router plus a 25% traffic buffer",
-        "fallback_kind": "simulated",
+        "adds": "Live traffic flow tiles on the judges' map.",
+        "fallback": "No traffic layer on the map",
+        "fallback_kind": "not_set",
         "link": "https://developer.tomtom.com/user/register",
     },
     {
         "key": "CESIUM_ION_TOKEN",
         "label": "Cesium ion access token",
-        "adds": "High-resolution satellite imagery on the 3D globe.",
-        "fallback": "OpenStreetMap imagery, no token needed",
+        "adds": "Stored for a future 3D globe view.",
+        "fallback": "Not used yet",
         "fallback_kind": "not_set",
         "link": "https://ion.cesium.com/signup",
     },
     {
         "key": "FIRMS_MAP_KEY",
         "label": "NASA FIRMS map key",
-        "adds": "Active wildfire detections (VIIRS, last 24 h) across Southern California, with an alert when a fire is within 5 km of a route.",
-        "fallback": "Clearly labeled simulated fire points",
-        "fallback_kind": "simulated",
+        "adds": "Active wildfire detections (VIIRS, last 24 h) as red dots on the judges' map.",
+        "fallback": "No fire layer on the map",
+        "fallback_kind": "not_set",
         "link": "https://firms.modaps.eosdis.nasa.gov/api/map_key/",
     },
     {
         "key": "OPENSKY_CLIENT_ID",
         "label": "OpenSky client ID",
-        "adds": "OpenSky Network as the live flight source (needs the client secret too).",
-        "fallback": "adsb.lol live flights, no key needed",
+        "adds": "Stored for OpenSky as an alternate flight source.",
+        "fallback": "Flights come from adsb.lol, no key needed",
         "fallback_kind": "not_set",
         "link": "https://opensky-network.org/my-opensky/account",
     },
     {
         "key": "OPENSKY_CLIENT_SECRET",
         "label": "OpenSky client secret",
-        "adds": "Pairs with the client ID for OpenSky OAuth2 access.",
-        "fallback": "adsb.lol live flights, no key needed",
+        "adds": "Pairs with the OpenSky client ID.",
+        "fallback": "Flights come from adsb.lol, no key needed",
         "fallback_kind": "not_set",
         "link": "https://opensky-network.org/my-opensky/account",
     },
     {
         "key": "VAPI_PUBLIC_KEY",
         "label": "Vapi public key",
-        "adds": "The \"Talk to dispatcher\" button: talk to the voice agent from the dashboard in the browser.",
-        "fallback": "Button hidden; the phone line still works",
+        "adds": "Stored for a browser \"Talk to dispatcher\" button.",
+        "fallback": "The phone line (858) 348-9340 works without it",
         "fallback_kind": "not_set",
         "link": "https://dashboard.vapi.ai/org/api-keys",
     },
@@ -71,6 +72,8 @@ FIELDS = [
 ]
 
 KEYS = [f["key"] for f in FIELDS]
+KEY_LINE = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
+UNSAFE = re.compile(r"[\r\n\"]")
 
 health: dict[str, dict] = {}
 
@@ -92,32 +95,50 @@ def get(key: str) -> str:
     return (field or {}).get("default", "")
 
 
-def opensky_ready() -> bool:
-    return has("OPENSKY_CLIENT_ID") and has("OPENSKY_CLIENT_SECRET")
-
-
 def report(key: str, ok: bool, detail: str = "") -> None:
     health[key] = {"ok": ok, "detail": detail[:200], "ts": time.time()}
 
 
+def _write_env(updates: dict[str, str | None]) -> None:
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
+    out, done = [], set()
+    for line in lines:
+        m = KEY_LINE.match(line)
+        if m and m.group(1) in updates:
+            key = m.group(1)
+            if updates[key] is not None and key not in done:
+                out.append(f'{key}="{updates[key]}"')
+            done.add(key)
+        else:
+            out.append(line)
+    out += [f'{k}="{v}"' for k, v in updates.items() if v is not None and k not in done]
+    text = "\n".join(out).strip("\n") + "\n" if out else ""
+    for attempt in range(6):
+        try:
+            with open(ENV_PATH, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.25)
+
+
 def save(values: dict, clear: list) -> list[str]:
-    if not ENV_PATH.exists():
-        ENV_PATH.write_text("", encoding="utf-8")
-    changed = []
+    updates: dict[str, str | None] = {}
     for key, value in (values or {}).items():
-        value = str(value or "").strip().replace("\n", "").replace("\r", "").replace('"', "")
-        if key not in KEYS or not value:
-            continue
-        set_key(str(ENV_PATH), key, value, quote_mode="always")
-        health.pop(key, None)
-        changed.append(key)
+        value = UNSAFE.sub("", str(value or "")).strip()
+        if key in KEYS and value:
+            updates[key] = value
     for key in clear or []:
         if key in KEYS:
-            unset_key(str(ENV_PATH), key, quote_mode="always")
+            updates[key] = None
+    if updates:
+        _write_env(updates)
+        for key in updates:
             health.pop(key, None)
-            changed.append(key)
     reload()
-    return changed
+    return list(updates)
 
 
 def status() -> dict:

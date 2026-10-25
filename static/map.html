@@ -93,10 +93,13 @@
     organ.setLatLng([s.position.lat, s.position.lng]);
     const c = OR.STATUS_COLORS[s.status];
     if (c !== organColor) { organ.setIcon(organIcon(c)); organColor = c; }
-    if (s.device && s.device.lat) { device.setLatLng([s.device.lat, s.device.lng]).setStyle({ opacity: 1 }).bindTooltip("real phone GPS"); }
+    if (s.device && s.device.lat) { const off = s.box && s.box.offline;
+      device.setLatLng([s.device.lat, s.device.lng]).setStyle({ opacity: off ? 0.45 : 1, color: off ? "#6b7280" : "#a78bfa" })
+        .bindTooltip(off ? "box offline: last known location" : "real phone GPS"); }
     if (!fitted) { map.fitBounds(Object.values(s.places).map((p) => [p.lat, p.lng]), { padding: [40, 40] }); fitted = true; }
 
-    $("ship").textContent = `${s.organ_label} ${s.shipment_id} → ${s.destination.short}`;
+    $("ship").textContent = `${s.organ_label} ${s.shipment_id} → ${s.destination.short}` +
+      (s.demo && s.demo.enabled ? " · includes SIMULATED demo data" : "");
     $("pill").className = "pill " + s.status; $("pill").textContent = s.delivered ? "delivered" : s.status;
     $("margin").textContent = OR.fmtHM(s.margin_min); $("margin").style.color = c;
     const rem = Math.max(1, s.remaining_min);

@@ -74,9 +74,76 @@ static/        the six views (plain HTML/JS, Leaflet bundled for offline use)
 - When the margin goes red, the engine computes options from where the box is *now*: hold, charter (call-out + nearest charter airports + ground) and reroute (best-margin alternate center by ground). It slows the clock while the human decides, then applies the choice.
 - Organs and people in the scenario are fictional. Hospital and airport coordinates are real so the map looks right. Change `SCENARIO["organ"]`, or use the organ picker on the control panel: heart and liver start on a charter route, because they'd never fly as commercial cargo.
 
+## Live airport conditions and preservation mode
+
+- `server/feeds.py` polls the **FAA NAS status** and **METAR** feeds every 2 minutes (free, no keys) and shows them on the control panel. Ground stops, closures and delay programs, and IFR/LIFR weather, become heuristic delay minutes on the next flight touching that airport. GA-only closure notices are ignored.
+- Feeds are **display-only by default**. Tick "Apply live feeds" on the control panel (or set `FEEDS_APPLY=1`) to let them change the shipment. Real-world delays can otherwise surprise a demo.
+- The control panel's reset has a **Static ice / Perfusion pump** choice. The pump window and packaging time are demo assumptions in `PRESERVATION` in `scenario.py`.
+
+## Simulated demo feeds (demo only, not live)
+
+`server/demo_feeds.py` supplies **static stand-ins** for data sources that aren't integrated yet, so the demo can show how they would change a shipment. **None of it is real or live.** The values are invented for demonstration, and the file says so at the top.
+
+| Stand-in for | What the demo uses |
+|---|---|
+| ADS-B flight track | A canned RNO to LAX path, with altitude and speed derived from progress. The waypoints are illustrative, not a real track. |
+| Airline schedule | Scheduled vs estimated times, derived from the demo route. |
+| Road data (Google Routes) | A fixed traffic factor. The "road incident" switch adds 60% to drive times. |
+| Cargo office hours | An invented hours table. "LAX cargo closed" holds the organ until 07:00. |
+| Charter availability | An invented table. "No charter at RNO" moves the charter to the next free airport. |
+| Theatre availability | An invented table. A centre that isn't ready is dropped from reroute options, or flagged if it's the destination. |
+| Recipient travel time | A fixed 40 minutes, producing a "call the recipient now" announcement. |
+
+- It is **on by default**. Switch it off with `DEMO_FEEDS=0` or the control-panel checkbox. Switching it off removes any delays it added.
+- It is labelled everywhere: a "DEMO ONLY" badge on the control panel, "includes SIMULATED demo data" on the judges' map, a `[DEMO]` prefix on the delay events it causes, and the decision log records the actor as `demo feed, simulated`.
+- The scenario buttons on the control panel flip each condition on and off.
+- Replace each table with a real feed as it is integrated. The real FAA and METAR feeds are separate (`feeds.py`).
+
+## Safety, audit and access
+
+- **Decision log:** every event, custody change and decision is appended to `decision_log.jsonl` (what, why, who, UTC time, unique action ID). It is never rewritten, so it survives resets. The file is git-ignored.
+- **Access:** set `BASIC_AUTH_USER` and `BASIC_AUTH_PASS` in `.env` before exposing the app with ngrok. This protects every page and API except `/voice/*`, which instead rejects any request without a valid Twilio signature (and always rejects when Twilio isn't configured). The server prints a warning if `PUBLIC_URL` is set without basic auth.
+- **Out of scope:** recipient choice, accepting or declining organs, and clinical or viability questions are refused (spoken, tapped or by phone) and logged. The system only handles logistics.
+- **Box offline:** if the box has reported before and then stays silent for 10 minutes (`BOX_OFFLINE_SEC`), the status goes amber, the coordinator is alerted and the map greys the last known location. Use **Box goes silent** on the control panel to demo it.
+- **Stale data:** a live feed older than 5 minutes is marked low confidence, is never applied to the shipment, and triggers one coordinator alert. The control panel shows each feed's age.
+- **Critical:** when no option fits inside the planned window, the status says so plainly, the call leads with it, and the best available ETA is shown.
+- **Privacy:** no personal names (couriers and crews are role labels), and the shipment code is never sent to Claude.
+
+## Roadmap (intended future features)
+
+Not built yet. Each entry notes what it needs.
+
+**Transport**
+- **ADS-B (adsb.lol):** live aircraft position for the flight leg. Needs a real shipment tied to a real flight number.
+- **Airline schedules:** planned vs actual times, so we can tell a flight is late and not only where it is. Needs a paid API.
+- **Cargo office hours:** if the cargo office is shut when the organ lands, nobody can collect it. Needs real opening hours per airport.
+- **Road data (Google Routes, Caltrans 511):** live drive times, accidents and closures in place of `ground_minutes()`. Google Routes needs a billing-enabled key. Caltrans 511 doesn't cover Nevada.
+- **Charter and drone availability:** which backup aircraft are free right now, replacing the fixed 45-minute call-out. Needs a partner feed.
+- **TAF forecasts:** METAR is live today. TAF adds the next 24 to 30 hours.
+
+**Coordination**
+- **Theatre availability:** don't offer a reroute to a centre whose OR or surgeon isn't ready.
+- **Recipient travel time:** time the OR announcements to when the patient needs to be called.
+- **Confirmation log:** who acknowledged what, and when, including the OR and courier. Today only the coordinator's decision is logged.
+- **TransNet scan and OCR at checkpoints:** a scan or a phone-camera read of the label or air waybill as a second custody source that overrides the geofence guess. Needs a scan/camera screen.
+
+**History and prediction**
+- **MedRoute run history:** save every finished run (events, custody, margins) to disk.
+- **OPTN STAR files:** calibrate organ windows and thresholds from past CIT and distances. Needs a signed data use agreement.
+- **Incident and near-miss reports:** past failures by route, airline and airport.
+
+**Product ideas**
+- **Team transport:** route the surgeons who fly out to procure hearts, livers and lungs, as well as the organ.
+- **Storm mode:** when an airport shuts, replan every organ in the region at once. Needs the engine to handle several shipments.
+- **Auto incident report:** generate the standardised report HRSA now wants, from `events` and `custody`.
+- **Cost report export:** turn transport costs into line items for OPO Medicare cost reports.
+- **Coordinator training simulator:** reuse the control panel as a flight simulator for failures.
+- **Other cargo:** blood, bone marrow, tissue and time-critical lab samples.
+- **Feasibility score on offers:** "arrives at 9h CIT vs 17h CIT" to help centres accept faster. Advisory only. The options already carry ETA and margin.
+
 ## API (for teammates)
 
-- `POST /api/control` `{action: play|pause|reset|speed|delay|temp|shock|escalate, ...}`
+- `POST /api/control` `{action: play|pause|reset|speed|delay|temp|shock|escalate|feeds, ...}` (`reset` takes `organ` and `preservation`; `feeds` takes `value`)
 - `POST /api/telemetry` `{kind: "shock", g}` or `{kind: "geo", lat, lng, accuracy}`
 - `POST /api/decide` `{choice}` or `{utterance}`
 - `GET /api/state`, `WS /ws` (full state about twice a second)

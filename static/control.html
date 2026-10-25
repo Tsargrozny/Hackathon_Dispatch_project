@@ -56,6 +56,7 @@
     </div>
     <div class="row">
       <select id="organ"><option value="kidney">Kidney (24h)</option><option value="liver">Liver (10h)</option><option value="heart">Heart (5h)</option></select>
+      <select id="pres"><option value="ice">Static ice</option><option value="pump">Perfusion pump</option></select>
       <button class="danger" id="reset">Reset scenario</button>
     </div>
     <h2 style="margin-top:16px">Inject trouble</h2>
@@ -72,7 +73,27 @@
     <div class="row">
       <button id="shock">Drop the box (shock)</button>
       <button id="escalate">Force escalation call</button>
+      <button id="boxoff">Box goes silent</button>
+      <button id="boxon">Box back</button>
     </div>
+  </section>
+
+  <section class="card" id="feedcard">
+    <h2>Live airport conditions</h2>
+    <div class="row">
+      <label><input type="checkbox" id="feedapply"> Apply live feeds to the shipment</label>
+      <span id="feedstat" class="muted" style="font-size:13px"></span>
+    </div>
+    <div id="feedbody" style="font-size:13px"></div>
+    <p class="muted" style="font-size:12px;margin:6px 0 0">FAA NAS status + METAR, polled every 2 min. Off by default so real-world delays can't surprise a demo.</p>
+  </section>
+
+  <section class="card" id="democard">
+    <h2>Simulated feeds <span class="pill amber" style="text-transform:none;letter-spacing:0">DEMO ONLY · not live data</span></h2>
+    <div class="row"><label><input type="checkbox" id="demoon"> Use simulated stand-ins for feeds not yet integrated</label></div>
+    <div id="demoitems" style="font-size:13px"></div>
+    <div class="row" id="democonds" style="margin-top:8px"></div>
+    <p class="muted" style="font-size:12px;margin:6px 0 0">Static values, not from any real source: flight track, airline schedule, road data, cargo hours, charter and theatre availability, recipient travel time. Delays they cause are tagged [DEMO].</p>
   </section>
 
   <section class="card" id="esc">
@@ -98,9 +119,13 @@
   $("play").onclick = () => ctl("play");
   $("pause").onclick = () => ctl("pause");
   $("speed").onchange = (e) => ctl("speed", { value: +e.target.value });
-  $("reset").onclick = () => ctl("reset", { organ: $("organ").value });
+  $("reset").onclick = () => ctl("reset", { organ: $("organ").value, preservation: $("pres").value });
+  $("demoon").onchange = (e) => ctl("demo_enabled", { value: e.target.checked });
+  $("feedapply").onchange = (e) => ctl("feeds", { value: e.target.checked });
   $("shock").onclick = () => ctl("shock");
   $("escalate").onclick = () => ctl("escalate");
+  $("boxoff").onclick = () => ctl("box_offline");
+  $("boxon").onclick = () => ctl("box_online");
   document.querySelectorAll("[data-delay]").forEach((b) =>
     b.onclick = () => ctl("delay", { minutes: +b.dataset.delay, label: b.dataset.label }));
   $("tempr").oninput = (e) => { $("tempv").textContent = (+e.target.value).toFixed(1) + "°C"; };
@@ -112,6 +137,26 @@
 
   OR.connect((s) => {
     $("integr").textContent = `Claude: ${s.integrations.claude ? "on" : "off (template script)"} · Twilio: ${s.integrations.twilio ? "on (real calls)" : "off (browser phone)"}`;
+    const dm = s.demo;
+    if (dm) {
+      $("demoon").checked = dm.enabled;
+      $("demoitems").innerHTML = dm.items.map((i) => `<div><b>${i.name}</b> · ${i.reading}</div>`).join("") || '<span class="muted">Off.</span>';
+      $("democonds").innerHTML = dm.enabled ? Object.entries(dm.conditions).map(([k, c]) =>
+        `<button data-cond="${k}" class="${c.on ? "danger" : ""}">${c.on ? "ON: " : ""}${c.label}</button>`).join("") : "";
+      $("democonds").querySelectorAll("[data-cond]").forEach((b) =>
+        b.onclick = () => ctl("demo", { name: b.dataset.cond, value: !dm.conditions[b.dataset.cond].on }));
+    }
+    const f = s.feeds;
+    if (f) {
+      $("feedapply").checked = f.apply;
+      const src = (n, x) => x.age_s == null ? `${n}: no data` : `${n}: ${Math.round(x.age_s / 60)} min old${x.confidence === "low" ? " · LOW CONFIDENCE" : ""}`;
+      $("feedstat").textContent = f.sources ? `${src("FAA", f.sources.faa)} · ${src("weather", f.sources.wx)}` : (f.error || "waiting for first poll");
+      $("feedbody").innerHTML = Object.values(f.airports).map((a) => {
+        const faa = a.faa ? (a.faa.status === "normal" ? "FAA normal" : a.faa.note) : "FAA n/a";
+        const wx = a.wx ? `weather ${a.wx.cat}` : "weather n/a";
+        return `<div><b>${a.name}</b> · ${faa} · ${wx}</div>`;
+      }).join("");
+    }
     $("pill").className = "pill " + s.status; $("pill").textContent = s.status;
     $("leg").textContent = s.delivered ? "Delivered" : `${s.leg.name} · ${s.leg.custodian}`;
     $("margin").textContent = OR.fmtHM(s.margin_min);

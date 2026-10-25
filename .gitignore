@@ -106,9 +106,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-=======
-.env
-.venv/
-__pycache__/
-*.pyc
->>>>>>> d307288 (Initial project import)
+
+# Decision log is local audit data
+decision_log.jsonl

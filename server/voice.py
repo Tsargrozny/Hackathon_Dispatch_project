@@ -5,6 +5,9 @@ template script, keyword matching, and the browser "coordinator phone" page.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -48,15 +51,17 @@ async def make_script(snapshot: dict, options: list[dict], reason: str, fallback
     prompt = f"""You are the voice of an organ-transport monitoring system calling an organ procurement
 coordinator who may have just been woken up. Write what the phone call should SAY, under 70 words.
 Plain spoken English, no markdown, no lists, no emojis. Times as words like "two hours ten minutes".
-Lead with the organ, its destination and the problem. Give each option's consequence in one short clause
+Refer to the shipment only as the literal token SHIPMENT_REF. Lead with the organ, its destination and the problem. Give each option's consequence in one short clause
 (remaining safe time "to spare" = margin). End with exactly: "Say {', '.join(o['key'] for o in opts[:-1])}, or {opts[-1]['key']}."
 
+{"Every option misses the planned window: say plainly that no route fits, then give the best available option." if opts and all(o["margin_min"] < 0 for o in opts) else ""}
 Problem: {reason}
-Shipment: {snapshot['organ_label']} {snapshot['shipment_id']} to {snapshot['destination']['name']}.
+Shipment: {snapshot['organ_label']} SHIPMENT_REF to {snapshot['destination']['name']}.
 Current leg: {snapshot['leg']['name']}. Temperature {snapshot['temp_c']} C.
 Options (minutes): {json.dumps(opts)}"""
     text = await _claude(prompt)
-    return text or fallback
+    # The shipment code is substituted here, after the model call, so it never leaves this server.
+    return text.replace("SHIPMENT_REF", snapshot["shipment_id"].replace("-", " ")) if text else fallback
 
 
 KEYWORDS = {
@@ -80,6 +85,30 @@ async def interpret(utterance: str, options: list[dict]) -> str | None:
         if t in valid:
             return t
     return None
+
+
+REFUSAL = ("I can't help with that. Choosing a recipient, accepting or declining an organ, and clinical "
+           "questions are decisions for the transplant team, not this system. I've logged the request.")
+# Clinical or viability questions are always refused; recipient talk only when no option was understood,
+# so "reroute, the patient at Davis is ready" still works.
+CLINICAL = re.compile(r"\b(viab\w*|usable|good enough|clinical\w*|medical\w*|safe to (use|transplant)|"
+                      r"still (good|ok|okay|fine)|accept|decline|reject)\b", re.I)
+RECIPIENT = re.compile(r"\b(recipient|patient|allocat\w*|who (gets|should get)|give it to)\b", re.I)
+
+
+def clinical_refusal(utterance: str) -> str | None:
+    return REFUSAL if CLINICAL.search(utterance or "") else None
+
+
+def recipient_refusal(utterance: str) -> str | None:
+    return REFUSAL if RECIPIENT.search(utterance or "") else None
+
+
+def valid_signature(url: str, params: dict, signature: str, token: str) -> bool:
+    """Twilio request signature: base64(HMAC-SHA1(token, url + sorted key/value pairs))."""
+    data = url + "".join(k + str(params[k]) for k in sorted(params))
+    expected = base64.b64encode(hmac.new(token.encode(), data.encode(), hashlib.sha1).digest()).decode()
+    return hmac.compare_digest(expected, signature or "")
 
 
 async def place_call(escalation_id: str) -> tuple[bool, str]:

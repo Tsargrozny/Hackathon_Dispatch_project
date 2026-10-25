@@ -7,10 +7,10 @@ and airport coordinates are real so the map looks right.
 
 PLACES = {
     "donor":   {"name": "Renown Regional Medical Center", "short": "Renown, Reno", "lat": 39.5260, "lng": -119.7960, "kind": "hospital"},
-    "rno":     {"name": "Reno-Tahoe Intl (RNO)", "short": "RNO airport", "lat": 39.4991, "lng": -119.7681, "kind": "airport", "charter": True},
-    "lax":     {"name": "Los Angeles Intl (LAX) cargo", "short": "LAX cargo", "lat": 33.9416, "lng": -118.4085, "kind": "airport", "charter": False},
-    "vny":     {"name": "Van Nuys Airport (VNY) charter terminal", "short": "VNY charter", "lat": 34.2098, "lng": -118.4895, "kind": "airport", "charter": True},
-    "smf":     {"name": "Sacramento Intl (SMF)", "short": "SMF airport", "lat": 38.6954, "lng": -121.5908, "kind": "airport", "charter": True},
+    "rno":     {"name": "Reno-Tahoe Intl (RNO)", "short": "RNO airport", "lat": 39.4991, "lng": -119.7681, "kind": "airport", "icao": "KRNO", "charter": True},
+    "lax":     {"name": "Los Angeles Intl (LAX) cargo", "short": "LAX cargo", "lat": 33.9416, "lng": -118.4085, "kind": "airport", "icao": "KLAX", "charter": False},
+    "vny":     {"name": "Van Nuys Airport (VNY) charter terminal", "short": "VNY charter", "lat": 34.2098, "lng": -118.4895, "kind": "airport", "icao": "KVNY", "charter": True},
+    "smf":     {"name": "Sacramento Intl (SMF)", "short": "SMF airport", "lat": 38.6954, "lng": -121.5908, "kind": "airport", "icao": "KSMF", "charter": True},
     "cedars":  {"name": "Cedars-Sinai Medical Center", "short": "Cedars-Sinai, LA", "lat": 34.0754, "lng": -118.3803, "kind": "center"},
     "ucdavis": {"name": "UC Davis Medical Center", "short": "UC Davis, Sacramento", "lat": 38.5536, "lng": -121.4559, "kind": "center"},
     "ucsf":    {"name": "UCSF Medical Center", "short": "UCSF, San Francisco", "lat": 37.7631, "lng": -122.4576, "kind": "center"},
@@ -23,6 +23,13 @@ ORGANS = {
     "heart":  {"label": "Heart", "window_min": 5 * 60},
 }
 
+# How the organ travels. Multipliers are demo assumptions, not clinical figures: a perfusion pump
+# extends the usable window but the machine is bulkier, so packaging takes longer.
+PRESERVATION = {
+    "ice":  {"label": "Static ice", "window_mult": 1.0, "extra_packaging_min": 0},
+    "pump": {"label": "Perfusion pump", "window_mult": 1.25, "extra_packaging_min": 15},
+}
+
 SCENARIO = {
     "shipment_id": "KI-2614",
     "organ": "kidney",
@@ -30,8 +37,8 @@ SCENARIO = {
     "elapsed_at_start_min": 13 * 60,
     "destination": "cedars",
     "clock_start": "02:40",  # wall-clock time the story starts
-    "opo": "Basin Donor Network (OPO)",
-    "coordinator": "Dana, OPO on-call coordinator",
+    "opo": "Donor network (OPO)",
+    "coordinator": "OPO on-call coordinator",
 }
 
 # Status thresholds as a share of the organ's total window.
@@ -39,6 +46,12 @@ AMBER_MARGIN_SHARE = 0.20
 RED_MARGIN_SHARE = 0.08
 TEMP_OK = (1.0, 8.0)     # amber outside this
 TEMP_RED_ABOVE = 10.0    # red above this
+
+
+# Role labels only: no personal names anywhere in the system.
+COURIER_A = "Courier A (Reno)"
+COURIER_B = "Courier B (Los Angeles)"
+CHARTER_CREW = "Charter crew (fictional operator)"
 
 
 def p(key):
@@ -50,9 +63,9 @@ def initial_legs():
     """The planned route: commercial cargo, the usual way kidneys travel."""
     return [
         dict(name="Packaging at donor hospital", mode="stationary", start=p("donor"), end=p("donor"),
-             duration=20, custodian="Recovery team, Basin Donor Network"),
+             duration=20, custodian="Recovery team (OPO)"),
         dict(name="Courier to RNO cargo", mode="ground", start=p("donor"), end=p("rno"),
-             duration=15, custodian="Courier J. Ortiz, Silver State Couriers"),
+             duration=15, custodian=COURIER_A),
         dict(name="Cargo check-in, waiting for flight", mode="stationary", start=p("rno"), end=p("rno"),
              duration=60, custodian="Airline cargo, RNO"),
         dict(name="Commercial flight RNO to LAX", mode="flight", start=p("rno"), end=p("lax"),
@@ -60,5 +73,5 @@ def initial_legs():
         dict(name="Cargo recovery at LAX", mode="stationary", start=p("lax"), end=p("lax"),
              duration=30, custodian="Airline cargo, LAX"),
         dict(name="Courier to Cedars-Sinai", mode="ground", start=p("lax"), end=p("cedars"),
-             duration=40, custodian="Courier M. Reyes, Basin Courier LA"),
+             duration=40, custodian=COURIER_B),
     ]

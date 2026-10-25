@@ -68,7 +68,9 @@
       const said = ev.results[0][0].transcript;
       document.getElementById("heard").textContent = `“${said}”`;
       const res = await OR.post("/api/decide", { utterance: said, source: "coordinator voice" });
-      if (!res.ok && tries++ < 2) {
+      if (res.refused) {
+        OR.speak(res.say + " " + choicesPrompt(), { onend: listen });
+      } else if (!res.ok && tries++ < 2) {
         OR.speak("Sorry, I didn't catch that. " + choicesPrompt(), { onend: listen });
       }
     };
@@ -100,6 +102,11 @@
   const onEvent = OR.eventStream("coordinator", (e) => {
     if (e.kind === "decision" && e.say && mode !== "idle") {
       OR.speak(e.say + " Thank you.", { interrupt: true });
+    }
+    if (e.kind === "alert") {
+      OR.vibrate(e.vibrate || [300, 150, 300]);
+      OR.speak(e.say || e.text, { interrupt: true });
+      document.getElementById("note").textContent = e.text;
     }
   });
 

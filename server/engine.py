@@ -7,14 +7,19 @@ organ's remaining safe time and its ETA, and decides when a human is needed.
 from __future__ import annotations
 
 import math
+import os
 import time
 from copy import deepcopy
 
+from . import decision_log
 from . import scenario as sc
+from .demo_feeds import RECIPIENT_CALL_BUFFER_MIN, RECIPIENT_TRAVEL_MIN
+from .demo_feeds import WHO as DEMO_WHO
 from .geo import flight_minutes, ground_minutes, haversine_km, lerp
 
 DEFAULT_SPEED = 120.0          # simulated minutes per real minute (2 sim-min per second)
 ESCALATION_SPEED = 10.0        # slow the world down while a human decides
+BOX_OFFLINE_SEC = float(os.getenv("BOX_OFFLINE_SEC", 600))  # no box report for this long = box offline
 
 
 def fmt_hm(minutes: float) -> str:
@@ -36,15 +41,19 @@ def say_hm(minutes: float) -> str:
 
 
 class Engine:
+    demo = None  # optional DemoFeeds: simulated stand-ins for feeds that aren't integrated yet
+
     def __init__(self):
         self.reset()
 
     # ------------------------------------------------------------------ setup
-    def reset(self, organ: str | None = None):
+    def reset(self, organ: str | None = None, preservation: str | None = None):
         cfg = sc.SCENARIO
         self.organ_key = organ or cfg["organ"]
         organ_cfg = sc.ORGANS[self.organ_key]
-        self.window_min = organ_cfg["window_min"]
+        self.preservation_key = preservation if preservation in sc.PRESERVATION else "ice"
+        pres = sc.PRESERVATION[self.preservation_key]
+        self.window_min = organ_cfg["window_min"] * pres["window_mult"]
         # Kidneys often wait hours during allocation; hearts/livers leave soon after recovery.
         self.elapsed0 = cfg["elapsed_at_start_min"] if self.organ_key == "kidney" else 60
         self.shipment_id = cfg["shipment_id"]
@@ -62,9 +71,12 @@ class Engine:
             # Short-window organs fly charter with the recovery team; aircraft is already on standby.
             charter = [l for l in self._charter_legs(sc.p("donor"), self.destination) if l["mode"] != "stationary"]
             self.legs = [dict(l, delay=0.0) for l in [self.legs[0]] + charter]
+        self.legs[0]["duration"] += pres["extra_packaging_min"]
+        self.planned = [l["duration"] for l in self.legs]  # original durations, for schedule comparisons
         self.leg_idx = 0
         self.leg_elapsed = 0.0
         self.plan_version = 1
+        self.feed_applied: dict[str, tuple[int, float]] = {}  # feed source -> (leg index, minutes applied)
         self.path: list[list[float]] = []
         self._last_path_sim = -999.0
 
@@ -72,6 +84,9 @@ class Engine:
         self.temp = self.temp_base
         self.last_shock_sim: float | None = None
         self.device: dict | None = None
+        self.box_offline = False
+        self.critical = False
+        self.critical_best_eta: float | None = None
 
         self.events: list[dict] = []
         self.custody: list[dict] = []
@@ -90,6 +105,20 @@ class Engine:
         self._record_path(force=True)
         self._recompute_status(initial=True)
 
+    def _demo(self):
+        return self.demo if self.demo and self.demo.enabled else None
+
+    def leg_start_sim(self, i: int) -> float:
+        """Simulated minute at which leg `i` starts (or started)."""
+        if i <= self.leg_idx:
+            return self.sim_min - self.leg_elapsed
+        return (self.sim_min + self.leg["duration"] - self.leg_elapsed
+                + sum(l["duration"] for l in self.legs[self.leg_idx + 1:i]))
+
+    def minute_of_day(self, at_sim: float) -> int:
+        h, m = map(int, sc.SCENARIO["clock_start"].split(":"))
+        return (h * 60 + m + int(at_sim)) % (24 * 60)
+
     def organ_label(self):
         return sc.ORGANS[self.organ_key]["label"]
 
@@ -100,16 +129,24 @@ class Engine:
         total %= 24 * 60
         return f"{total // 60:02d}:{total % 60:02d}"
 
-    def event(self, kind: str, text: str, say: str | None = None, audience=None, vibrate=None):
+    def event(self, kind: str, text: str, say: str | None = None, audience=None, vibrate=None,
+              why: str = "", who: str = "system"):
         self._event_id += 1
         ev = dict(id=self._event_id, t=round(self.sim_min, 1), clock=self.clock(), kind=kind, text=text,
-                  say=say, audience=audience or ["all"], vibrate=vibrate, real_ts=time.time())
+                  say=say, audience=audience or ["all"], vibrate=vibrate, real_ts=time.time(),
+                  action_id=decision_log.new_action_id(), utc=decision_log.utc_now())
+        decision_log.write(ts_utc=ev["utc"], action_id=ev["action_id"], shipment=self.shipment_id, kind=kind,
+                           what=text, why=why, who=who, plan_version=self.plan_version)
         self.events.append(ev)
         self.events = self.events[-120:]
         return ev
 
     def _log_custody(self, who: str, how: str):
-        self.custody.append(dict(t=round(self.sim_min, 1), clock=self.clock(), custodian=who, how=how))
+        self.custody.append(dict(t=round(self.sim_min, 1), clock=self.clock(), custodian=who, how=how,
+                                 utc=decision_log.utc_now()))
+        decision_log.write(ts_utc=self.custody[-1]["utc"], action_id=decision_log.new_action_id(),
+                           shipment=self.shipment_id, kind="custody", what=f"Custody: {who}", why=how,
+                           who="system", plan_version=self.plan_version)
 
     def _record_path(self, force=False):
         if force or self.sim_min - self._last_path_sim >= 2:
@@ -130,6 +167,11 @@ class Engine:
         t = self.leg_elapsed / leg["duration"] if leg["duration"] > 0 else 1
         if leg["mode"] == "stationary":
             return leg["start"]
+        d = self._demo()
+        if d and leg["mode"] == "flight":
+            pos = d.replay_position(self._airport_key(leg["start"]), self._airport_key(leg["end"]), t)
+            if pos:
+                return pos
         return lerp(leg["start"], leg["end"], t)
 
     def elapsed(self):
@@ -214,6 +256,18 @@ class Engine:
                 status = "red" if status == "red" else "amber"
                 reasons.append("Shock detected, inspect packaging")
 
+            d = self._demo()
+            if d and not d.theatre_ok(self.destination):
+                status = "red" if status == "red" else "amber"
+                reasons.append(f"[DEMO] {sc.PLACES[self.destination]['short']} OR not ready (simulated)")
+            if self.critical and margin < 0:
+                status = "red"
+                reasons.insert(0, f"CRITICAL, no feasible route inside the planned window. "
+                                  f"Best available ETA {fmt_hm(self.critical_best_eta or self.eta())}")
+            if self.box_offline:
+                status = "red" if status == "red" else "amber"
+                reasons.append("Box offline: last known location only")
+
         prev = self.status
         self.status, self.reasons = status, reasons
         if initial or status == prev:
@@ -223,7 +277,8 @@ class Engine:
             self.event("status", f"Status {prev.upper()} → {status.upper()}: {'; '.join(reasons) or 'on track'}",
                        say=f"Status {status}. {words[status]}." if status != "green" else "Back on track.",
                        audience=["box", "map", "control", "courier"],
-                       vibrate=[600] if status == "red" else ([250, 100, 250] if status == "amber" else [60]))
+                       vibrate=[600] if status == "red" else ([250, 100, 250] if status == "amber" else [60]),
+                       why="; ".join(reasons) or "back within thresholds")
         open_esc = self.escalation and not self.escalation.get("decided")
         if (margin_red and not open_esc and self.plan_version not in self.escalated_versions
                 and not self.delivered):
@@ -243,6 +298,14 @@ class Engine:
                                + (" Begin anesthesia." if mark == 60 else "")
                                + (" Prepare the back table." if mark == 30 else ""),
                            audience=["or", "map"])
+        d = self._demo()
+        key = (self.plan_version, "recipient")
+        if d and eta <= RECIPIENT_TRAVEL_MIN + RECIPIENT_CALL_BUFFER_MIN and key not in self.announced:
+            self.announced.add(key)
+            dest = sc.PLACES[self.destination]
+            self.event("or", f"[DEMO] Call the recipient now: about {RECIPIENT_TRAVEL_MIN} min to reach {dest['short']}",
+                       say=f"Call the recipient now. They need about {RECIPIENT_TRAVEL_MIN} minutes to reach {dest['short']}.",
+                       audience=["or", "map"], why="simulated recipient travel time", who=DEMO_WHO)
 
     # ----------------------------------------------------- controls (demo panel)
     def add_delay(self, minutes: float, label: str):
@@ -256,7 +319,52 @@ class Engine:
         self.legs[target]["delay"] += minutes
         self.last_trouble = f"{label}, adding {say_hm(minutes)}"
         self.event("delay", f"{label}: +{fmt_hm(minutes)} on '{self.legs[target]['name']}'",
-                   audience=["map", "control", "courier"], vibrate=[400, 150, 400])
+                   audience=["map", "control", "courier"], vibrate=[400, 150, 400],
+                   why=label, who="control panel")
+        self._recompute_status()
+
+    def _airport_key(self, pt) -> str | None:
+        for k, v in sc.PLACES.items():
+            if v["kind"] == "airport" and haversine_km(pt, sc.p(k)) < 3:
+                return k
+        return None
+
+    def apply_feed_delay(self, source: str, airport: str, minutes: float, label: str):
+        """Set the delay a live feed implies for `airport` on the next flight that touches it.
+
+        Idempotent: `source` remembers what was already applied, so repeated polls only add the change.
+        """
+        if self.delivered:
+            return
+        idx = next((i for i in range(self.leg_idx, len(self.legs))
+                    if self.legs[i]["mode"] in ("flight", "charter")
+                    and airport in (self._airport_key(self.legs[i]["start"]), self._airport_key(self.legs[i]["end"]))), None)
+        self._apply_delay_at(source, idx, minutes, label, "live feed")
+
+    def _apply_delay_at(self, source: str, idx: int | None, minutes: float, label: str, who: str):
+        """Set the delay `source` implies on leg `idx`. Idempotent: only the change since last call is applied."""
+        if self.delivered:
+            return
+        prev_idx, prev_min = self.feed_applied.get(source, (idx, 0.0))
+        if idx is None:
+            idx = prev_idx
+        if idx is None or idx >= len(self.legs) or idx < self.leg_idx:
+            self.feed_applied.pop(source, None)
+            return
+        delta = minutes - prev_min
+        if abs(delta) < 1:
+            return
+        leg = self.legs[idx]
+        leg["duration"] = max(1.0, leg["duration"] + delta)
+        leg["delay"] = max(0.0, leg.get("delay", 0) + delta)
+        self.feed_applied[source] = (idx, minutes)
+        if delta > 0:
+            self.last_trouble = f"{label}, adding {say_hm(delta)}"
+            self.event("delay", f"{label}: +{fmt_hm(delta)} on '{leg['name']}' ({who})",
+                       audience=["map", "control", "courier"], vibrate=[400, 150, 400], why=label, who=who)
+        else:
+            self.event("delay", f"{label}: delay eased by {fmt_hm(-delta)} ({who})", audience=["map", "control"],
+                       why=label, who=who)
         self._recompute_status()
 
     def set_temp(self, value: float):
@@ -268,31 +376,42 @@ class Engine:
         self.last_shock_sim = self.sim_min
         self.event("shock", f"Shock detected ({g:.1f} g, {source}). Packaging check requested at next handoff.",
                    say="Shock detected. Please check the packaging.", audience=["box", "map", "control", "courier"],
-                   vibrate=[200, 100, 200, 100, 200])
+                   vibrate=[200, 100, 200, 100, 200], why=f"{g:.1f} g reading", who=source)
         self._recompute_status()
 
     # ------------------------------------------------------------ escalation
-    def _nearest_charter_airport(self, pt):
+    def _charter_airports(self, strict=True):
         airports = [k for k, v in sc.PLACES.items() if v["kind"] == "airport" and v.get("charter")]
-        return min(airports, key=lambda k: haversine_km(pt, sc.p(k)))
+        d = self._demo()
+        if not d:
+            return airports
+        free = [k for k in airports if d.charter_ok(k)]
+        return free if strict else (free or airports)
+
+    def _nearest_charter_airport(self, pt, strict=False):
+        return min(self._charter_airports(strict), key=lambda k: haversine_km(pt, sc.p(k)))
+
+    def _charter_callout(self, airport_key):
+        d = self._demo()
+        return d.charter_callout(airport_key) if d else 45
 
     def _charter_legs(self, pt, dest_key):
-        origin_ap = self._nearest_charter_airport(pt)
+        origin_ap = self._nearest_charter_airport(pt, strict=True) if self._charter_airports() else self._nearest_charter_airport(pt)
         dest_ap = self._nearest_charter_airport(sc.p(dest_key))
         cust = self.leg["custodian"]
         legs = [dict(name="Charter call-out (crew + aircraft)", mode="stationary", start=pt, end=pt,
-                     duration=45, custodian=cust)]
+                     duration=self._charter_callout(origin_ap), custodian=cust)]
         if haversine_km(pt, sc.p(origin_ap)) > 3:
             legs.append(dict(name=f"Courier to {sc.PLACES[origin_ap]['short']}", mode="ground", start=pt,
                              end=sc.p(origin_ap), duration=ground_minutes(pt, sc.p(origin_ap)),
-                             custodian="Courier J. Ortiz, Silver State Couriers"))
+                             custodian=sc.COURIER_A))
         legs.append(dict(name=f"Charter {sc.PLACES[origin_ap]['short']} to {sc.PLACES[dest_ap]['short']}",
                          mode="charter", start=sc.p(origin_ap), end=sc.p(dest_ap),
                          duration=flight_minutes(sc.p(origin_ap), sc.p(dest_ap)),
-                         custodian="Charter crew, SkyMed Air (fictional)"))
+                         custodian=sc.CHARTER_CREW))
         legs.append(dict(name=f"Courier to {sc.PLACES[dest_key]['short']}", mode="ground", start=sc.p(dest_ap),
                          end=sc.p(dest_key), duration=ground_minutes(sc.p(dest_ap), sc.p(dest_key)),
-                         custodian="Courier M. Reyes, Basin Courier LA"))
+                         custodian=sc.COURIER_B))
         return legs
 
     def compute_options(self):
@@ -313,15 +432,17 @@ class Engine:
         hold_legs[0]["duration"] -= self.leg_elapsed
         opts.append(mk("hold", f"Hold: keep current plan to {dest['short']}", hold_legs, self.destination,
                        f"Stay on the current plan to {dest['short']}"))
-        if not in_air:
+        if not in_air and self._charter_airports():
             c = mk("charter", f"Charter jet to {dest['short']}", self._charter_legs(pt, self.destination),
                    self.destination, f"Book a charter, same recipient at {dest['short']}")
             opts.append(c)
-            alts = [k for k, v in sc.PLACES.items() if v["kind"] == "center" and k != self.destination]
+            d = self._demo()
+            alts = [k for k, v in sc.PLACES.items() if v["kind"] == "center" and k != self.destination
+                    and (not d or d.theatre_ok(k))]
             best = None
             for k in alts:
                 legs = [dict(name=f"Courier to {sc.PLACES[k]['short']}", mode="ground", start=pt, end=sc.p(k),
-                             duration=ground_minutes(pt, sc.p(k)), custodian="Courier J. Ortiz, Silver State Couriers")]
+                             duration=ground_minutes(pt, sc.p(k)), custodian=sc.COURIER_A)]
                 o = mk("reroute", f"Reroute to {sc.PLACES[k]['short']}", legs, k,
                        f"Drive to the next matched recipient at {sc.PLACES[k]['short']}; "
                        f"the {dest['short']} patient would not receive this organ")
@@ -339,18 +460,26 @@ class Engine:
         )
         self.escalated_versions.add(self.plan_version)
         self.needs_escalation = False
+        best = max(opts, key=lambda o: o["margin_min"])
+        self.critical = best["margin_min"] < 0
+        self.critical_best_eta = best["eta_min"] if self.critical else None
+        self.escalation["critical"] = self.critical
+        self._recompute_status()
         if self.running and self.speed > ESCALATION_SPEED:
             self.speed_before_escalation = self.speed
             self.speed = ESCALATION_SPEED
         self.event("escalation", f"Escalating to coordinator: {reason}",
-                   audience=["coordinator", "map", "control", "box"])
+                   audience=["coordinator", "map", "control", "box"], why=reason, who="risk engine")
         return self.escalation
 
     def template_script(self, opts, reason):
         dest = sc.PLACES[self.destination]
         by = {o["key"]: o for o in opts}
         hold = by["hold"]
-        parts = [f"Organ relay alert for {self.organ_label().lower()} {self.shipment_id.replace('-', ' ')}, "
+        crit = all(o["margin_min"] < 0 for o in opts)
+        parts = ["Critical. No route fits inside the planned window. The best available option arrives "
+                 f"{say_hm(max(o['margin_min'] for o in opts))} past it."] if crit else []
+        parts += [f"Organ relay alert for {self.organ_label().lower()} {self.shipment_id.replace('-', ' ')}, "
                  f"headed to {dest['short']}. {reason}. "
                  f"On the current plan it arrives with {say_hm(hold['margin_min'])} "
                  f"{'to spare' if hold['margin_min'] >= 0 else 'past its safe window'}."]
@@ -375,10 +504,14 @@ class Engine:
             return False, f"Option '{key}' not available right now"
         opt = fresh[key]
         old_dest = self.destination
+        self.critical = opt["margin_min"] < 0
+        self.critical_best_eta = opt["eta_min"] if self.critical else None
+        why = f"{opt['summary']}; ETA {fmt_hm(opt['eta_min'])}, margin {fmt_hm(opt['margin_min'])}"
         self.escalation["decided"] = dict(key=key, source=source, utterance=utterance, clock=self.clock())
         if key != "hold":
             prev_custodian = self.leg["custodian"]
             self.legs = opt["legs"]
+            self.feed_applied = {}
             self.leg_idx = 0
             self.leg_elapsed = 0.0
             self.destination = opt["destination"]
@@ -394,11 +527,11 @@ class Engine:
         if key == "charter":
             self.event("decision", f"Coordinator chose CHARTER via {who}. New ETA {fmt_hm(opt['eta_min'])}.",
                        say=f"Charter confirmed. New arrival in {say_hm(opt['eta_min'])}.",
-                       audience=["all"], vibrate=[100, 60, 100, 60, 100])
+                       audience=["all"], vibrate=[100, 60, 100, 60, 100], why=why, who=who)
         elif key == "reroute":
             self.event("decision", f"Coordinator chose REROUTE to {new_dest['name']} via {who}.",
                        say=f"Rerouting to {new_dest['short']}. Arrival in {say_hm(opt['eta_min'])}.",
-                       audience=["all"], vibrate=[100, 60, 100, 60, 100])
+                       audience=["all"], vibrate=[100, 60, 100, 60, 100], why=why, who=who)
             self.event("or", f"{sc.PLACES[old_dest]['short']}: organ reallocated, stand down OR",
                        say=f"Attention {sc.PLACES[old_dest]['short']}. The incoming {self.organ_label().lower()} "
                            f"has been reallocated. Please stand down.", audience=["or"])
@@ -407,7 +540,7 @@ class Engine:
                            f"{say_hm(opt['eta_min'])}.", audience=["or"])
         else:
             self.event("decision", f"Coordinator chose HOLD via {who}.", say="Holding current plan.",
-                       audience=["all"])
+                       audience=["all"], why=why, who=who)
         self._recompute_status()
         self.escalation_closed_at = time.time()
         return True, key
@@ -416,8 +549,28 @@ class Engine:
     def device_report(self, data: dict):
         self.device = dict(data, ts=time.time())
 
+    def device_age(self) -> float | None:
+        return None if not self.device else time.time() - self.device["ts"]
+
+    def check_box(self):
+        """Flag the box offline once it has reported before and then gone quiet."""
+        age = self.device_age()
+        if age is None:
+            return
+        offline = age > BOX_OFFLINE_SEC
+        if offline == self.box_offline:
+            return
+        self.box_offline = offline
+        if offline:
+            self.event("alert", f"Box offline: no report for {int(age // 60)} min. Showing last known location.",
+                       say="Box offline. No signal from the cooler.", audience=["coordinator", "map", "control", "courier"],
+                       vibrate=[600], why=f"no telemetry for over {int(BOX_OFFLINE_SEC // 60)} min", who="monitor")
+        else:
+            self.event("box", "Box back online.", audience=["map", "control"], why="telemetry resumed", who="monitor")
+        self._recompute_status()
+
     # --------------------------------------------------------------- snapshot
-    def snapshot(self, integrations: dict):
+    def snapshot(self, integrations: dict, feeds: dict | None = None):
         dest = sc.PLACES[self.destination]
         lat, lng = self.position()
         legs = []
@@ -442,5 +595,9 @@ class Engine:
                      progress=0 if self.leg["duration"] == 0 else min(1, self.leg_elapsed / self.leg["duration"])),
             legs=legs, path=self.path, destination=dict(key=self.destination, **dest), places=sc.PLACES,
             custody=self.custody[-30:], events=self.events[-60:], escalation=esc, device=self.device,
-            plan_version=self.plan_version, integrations=integrations,
+            box=dict(reporting=self.device is not None, offline=self.box_offline,
+                     age_s=None if self.device_age() is None else round(self.device_age())),
+            critical=self.critical, demo=self.demo.snapshot(self) if self.demo else None,
+            plan_version=self.plan_version, integrations=integrations, feeds=feeds,
+            preservation=dict(key=self.preservation_key, label=sc.PRESERVATION[self.preservation_key]["label"]),
         )

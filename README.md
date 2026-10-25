@@ -1,5 +1,7 @@
 # Hackathon_Dispatch_project
 
+Full pitch deck: https://1drv.ms/p/c/d139807b8b674317/IQCEUc2NiekJRopzcCwmleP1ASZRgkT9K2XzHnxD1wq_rO8
+
 ## MedRoute dispatcher line: call **(858) 348-9340**
 
 Call the number, say which organ you have, where it is going and how long ago it was recovered. The Vapi voice agent calls our `plan_organ_transport` tool, the Organ Relay engine below re-plans the shipment and starts playback, and the agent reads back the destination, ETA and margin in one sentence. Every call shows up live in the event feed on the judges' map (`/map.html`) and the control panel.
